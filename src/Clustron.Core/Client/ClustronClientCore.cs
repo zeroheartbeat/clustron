@@ -1,0 +1,87 @@
+﻿// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+
+
+using Clustron.Core.Messaging;
+using Clustron.Core.Models;
+using Clustron.Core.Transport;
+using Clustron.Core.Serialization;
+using Clustron.Core.Cluster;
+using Clustron.Core.Events;
+using System.Collections.Concurrent;
+using Clustron.Core.Configuration;
+using Clustron.Abstractions;
+
+namespace Clustron.Core.Client;
+
+public class ClustronClientCore
+{
+    private readonly IMessageSerializer _serializer;
+    private readonly NodeInfo _self;
+    private readonly ClusterPeerManager _peerManager;
+    private readonly IClusterEventBus _eventBus;
+    private readonly ClusterNodeControllerBase _controller;
+
+    private readonly ConcurrentDictionary<string, Func<object, Task>> _handlers = new();
+
+    public event Action<NodeInfo>? NodeJoined;
+    public event Action<NodeInfo>? NodeLeft;
+    public event Action<NodeInfo, int>? LeaderChanged;
+
+    public ClustronClientCore(ClusterNodeControllerBase controller, IMessageSerializer serializer)
+    {
+        _controller = controller;
+        _serializer = serializer;
+        _self = controller.Runtime.Self;
+        _peerManager = controller.Runtime.PeerManager;
+        _eventBus = controller.Runtime.EventBus;
+        
+        _eventBus.Subscribe<NodeJoinedEvent>(e => NodeJoined?.Invoke(e.Node));
+        _eventBus.Subscribe<NodeLeftEvent>(e => NodeLeft?.Invoke(e.Node));
+        _eventBus.Subscribe<LeaderChangedEvent>(e => LeaderChanged?.Invoke(e.NewLeader, e.Epoch));
+    }
+
+    public IMessageSerializer Serializer => _serializer;
+    public NodeInfo Self => _self;
+
+    public Task SendAsync(Message message, string targetNodeId)
+    {
+        return _controller.Communication.Transport.SendAsync(_peerManager.GetPeerById(targetNodeId), message);
+    }
+
+    public Task BroadcastAsync(Message message)
+    {
+        return _controller.Communication.Transport.BroadcastAsync(message);
+    }
+
+    public IEnumerable<NodeInfo> GetMembers() => _peerManager.GetPeersWithRole(ClustronRoles.Member);
+
+    public IEnumerable<NodeInfo> GetMetricsCollectors() => _peerManager.GetPeersWithRole(ClustronRoles.MetricsCollector);
+    public IEnumerable<NodeInfo> GetObservers() => _peerManager.GetPeersWithRole(ClustronRoles.Observer);
+
+    public IEnumerable<NodeInfo> GetClients() => _peerManager.GetPeersWithRole(ClustronRoles.Client);
+
+    public NodeInfo? GetCurrentLeader() => _controller.CurrentLeader;
+
+    public IEnumerable<NodeInfo> GetPeersByRole(string role) =>
+        _peerManager.GetActivePeers().Where(p => p.Roles?.Contains(role, StringComparer.OrdinalIgnoreCase) == true);
+
+    public bool IsPeerAlive(string nodeId) => _peerManager.IsAlive(nodeId);
+
+    private Message CreateMessage(string messageType, object payload)
+    {
+        return new Message
+        {
+            MessageType = messageType,
+            SenderId = _self.NodeId,
+            CorrelationId = Guid.NewGuid().ToString(),
+            Payload = _serializer.Serialize(payload)
+        };
+    }
+}
+

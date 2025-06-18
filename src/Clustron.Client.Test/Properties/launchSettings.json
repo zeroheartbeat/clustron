@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Clustron.Client.Test": {
+      "commandName": "Project",
+      "commandLineArgs": "--Clustron:NodeName=Node2 --Clustron:Port=4002"
+    }
+  }
+}
