@@ -43,7 +43,7 @@ The Licensed Work is provided “AS IS,” without warranty of any kind. In no e
 ## Additional Information
 
 To purchase a commercial license, contact:  
-**heartbeats.zero@gmail.com** 
+**support@clustron.io** 
 
 Full license text and FAQ:  
 https://mariadb.com/bsl-faq-adopting/
