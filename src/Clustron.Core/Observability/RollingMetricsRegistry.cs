@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Abstractions;
 using System.Collections.Concurrent;
@@ -27,7 +27,7 @@ public class RollingMetricsRegistry : IMetricsSnapshotProvider
         counter.Increment();
     }
 
-    public int GetTotal(string key)
+    public long GetTotal(string key)
     {
         if (_counters.TryGetValue(key, out var counter))
         {
@@ -50,7 +50,7 @@ public class RollingMetricsRegistry : IMetricsSnapshotProvider
         var snapshot = new ClusterMetricsSnapshot
         {
             TimestampUtc = DateTime.UtcNow,
-            Totals = new Dictionary<string, int>(),
+            Totals = new Dictionary<string, long>(),
             PerSecondRates = new Dictionary<string, int[]>()
         };
 

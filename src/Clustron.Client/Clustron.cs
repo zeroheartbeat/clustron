@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Client.Bootstrap;
 using Clustron.Client.Handlers;
@@ -32,12 +32,18 @@ namespace Clustron.Client
         /// <summary>
         /// Initialize Clustron using the default configuration from appsettings.json and a clusterId.
         /// </summary>
-        public static IClustronClient Initialize(string clusterId)
+        public static IClustronClient Initialize(string clusterId, string[] args = null)
         {
-            var config = new ConfigurationBuilder()
+            var configBuilder = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .AddEnvironmentVariables()
-                .Build();
+                .AddEnvironmentVariables();
+
+            if (args != null && args.Length > 0)
+            {
+                configBuilder.AddCommandLine(args);
+            }
+
+            var config = configBuilder.Build();
 
             return Initialize(config, clusterId);
         }
@@ -58,7 +64,7 @@ namespace Clustron.Client
             }
 
             var builder = ClustronClientBuilder
-                .FromConfiguration(section)
+                .FromConfiguration(section, config)
                 .WithLogging(config);
 
             _host = builder.Build();

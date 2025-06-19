@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Abstractions;
 using Clustron.Core.Configuration;
@@ -69,7 +69,7 @@ namespace Clustron.Core.Cluster.Behaviors
                 .Where(p => p.NodeId != _self.NodeId)
                 .ToList();
 
-            _logger.LogInformation("Polling {Count} members for metrics...", peers.Count);
+            _logger.LogCritical("Polling {Count} members for metrics...", peers.Count);
 
             foreach (var peer in peers)
             {
@@ -122,7 +122,7 @@ namespace Clustron.Core.Cluster.Behaviors
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Sent, out var hbSentRates);
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Received, out var hbRecvRates);
 
-            _logger.LogInformation(
+            _logger.LogCritical(
                 "Received metrics from {NodeId}: MsgSent={TotalSent} {SentRates}, MsgRecv={TotalRecv} {RecvRates}, HB Recv={HbRecv} {HbRecvRates}, HB Sent={HbSent} {HbSentRates}",
                 snapshot.NodeId,
                 totalSent, FormatRates(sentRates ?? Array.Empty<int>()),

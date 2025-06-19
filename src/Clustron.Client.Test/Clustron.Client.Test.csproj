@@ -19,9 +19,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="appsettings-Node2.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

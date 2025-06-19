@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -26,7 +26,7 @@ public class ClusterViewBroadcasterBehavior : IRoleAwareBehavior
     private readonly IClusterCommunication _communication;
     private System.Timers.Timer? _timer;
 
-    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromMinutes(5);
 
     public string Name => "ClusterViewBroadcaster";
 

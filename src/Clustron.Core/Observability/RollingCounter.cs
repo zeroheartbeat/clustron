@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 namespace Clustron.Core.Observability;
 
@@ -16,6 +16,7 @@ public class RollingCounter
     private int _currentSecondCount = 0;
     private DateTime _lastSecond;
     private readonly object _lock = new();
+    private long _totalSinceStart = 0;
 
     public RollingCounter(int windowSize)
     {
@@ -30,6 +31,7 @@ public class RollingCounter
         {
             Flush();
             _currentSecondCount++;
+            _totalSinceStart++;
         }
     }
 
@@ -67,12 +69,11 @@ public class RollingCounter
         }
     }
 
-    public int Total()
+    public long Total()
     {
         lock (_lock)
         {
-            Flush();
-            return _buffer.Sum();
+            return _totalSinceStart;
         }
     }
 }

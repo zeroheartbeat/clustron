@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
@@ -30,7 +30,7 @@ public class DefaultMessageStatsProvider : IMetricContributor, IMetricsSnapshotP
 
     public void Increment(string key) => _metrics.Increment(key);
 
-    public int GetTotal(string key) => _metrics.GetTotal(key);
+    public long GetTotal(string key) => _metrics.GetTotal(key);
 
     public int[] GetPerSecondRates(string key, int seconds) => _metrics.GetPerSecondRates(key, seconds);
 

@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Abstractions;
 using Clustron.Client;
@@ -32,7 +32,7 @@ public class ClientMessageHandler : IMessageHandler
 
     public async Task HandleAsync(Message message)
     {
-        if (!_client.TryGetHandler(message.MessageType, out var dispatcher))
+        if (!_client.Messaging.TryGetHandler(message.MessageType, out var dispatcher))
         {
             _logger.LogWarning("No handler registered for message type: {Type}", message.MessageType);
             return;

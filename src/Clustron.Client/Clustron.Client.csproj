@@ -13,4 +13,9 @@
     <ProjectReference Include="..\Clustron.Core\Clustron.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Management\IClusterManager.cs" />
+    <None Include="Communication\IMessenger.cs" />
+  </ItemGroup>
+
 </Project>

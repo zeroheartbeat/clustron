@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 
 using Clustron.Core.Messaging;
@@ -56,7 +56,17 @@ public class ClustronClientCore
 
     public Task BroadcastAsync(Message message)
     {
-        return _controller.Communication.Transport.BroadcastAsync(message);
+        return _controller.Communication.Transport.BroadcastAsync(message, GetPeersExceptRole(ClustronRoles.Member));
+    }
+
+    public Task PublishAsync<T>(T @event) where T : IClusterEvent
+    {
+        return _eventBus.PublishAsync(@event);
+    }
+
+    public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
+    {
+        _eventBus.Subscribe(handler);
     }
 
     public IEnumerable<NodeInfo> GetMembers() => _peerManager.GetPeersWithRole(ClustronRoles.Member);
@@ -71,7 +81,13 @@ public class ClustronClientCore
     public IEnumerable<NodeInfo> GetPeersByRole(string role) =>
         _peerManager.GetActivePeers().Where(p => p.Roles?.Contains(role, StringComparer.OrdinalIgnoreCase) == true);
 
+    public IEnumerable<NodeInfo> GetPeersExceptRole(string role) =>
+        _peerManager.GetActivePeers().Where(p => p.Roles?.Contains(role, StringComparer.OrdinalIgnoreCase) == false);
+
+
+
     public bool IsPeerAlive(string nodeId) => _peerManager.IsAlive(nodeId);
+
 
     private Message CreateMessage(string messageType, object payload)
     {

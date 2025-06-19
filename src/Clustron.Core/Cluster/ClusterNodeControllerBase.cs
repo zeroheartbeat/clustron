@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Core.Cluster.State;
 using Clustron.Core.Events;
@@ -24,7 +24,6 @@ namespace Clustron.Core.Cluster
     {
         protected readonly NodeInfo Self;
         protected readonly JoinManager JoinManager;
-        protected readonly ITransport Transport;
         protected readonly ILogger Logger;
         protected readonly ClusterPeerManager PeerManager;
         protected readonly IClusterCommunication ClusterCommunication;
@@ -61,7 +60,7 @@ namespace Clustron.Core.Cluster
             if (_currentLeader == null)
                 return false;
 
-            return await Transport.CanReachNodeAsync(_currentLeader);
+            return await ClusterCommunication.Transport.CanReachNodeAsync(_currentLeader);
         }
 
         public bool IsSelfLeader() => _currentLeader?.NodeId == Self.NodeId;

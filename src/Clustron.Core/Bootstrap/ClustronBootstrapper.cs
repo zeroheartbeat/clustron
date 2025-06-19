@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Core.Configuration;
 using Clustron.Core.Extensions;
@@ -22,7 +22,9 @@ public class ClustronBootstrapper
     private IServiceProvider? _serviceProvider;
     private IConfiguration? _configuration;
     private IServiceCollection? _prebuiltServices;
+    private IConfiguration? _externalConfig;
 
+    
     public IServiceProvider Services => _serviceProvider
         ?? throw new InvalidOperationException("Bootstrapper not started yet");
 
@@ -37,17 +39,40 @@ public class ClustronBootstrapper
         configure(_services);
     }
 
+    public void UseConfiguration(IConfiguration config)
+    {
+        _externalConfig = config;
+    }
+
     public void Start(string[]? args = null)
     {
         // Build configuration from JSON, env, CLI
-        var configBuilder = new ConfigurationBuilder()
-            .AddJsonFile("appsettings.json", optional: true)
-            .AddEnvironmentVariables();
+        //var configBuilder = new ConfigurationBuilder()
+        //    .AddJsonFile("appsettings.json", optional: true)
+        //    .AddEnvironmentVariables();
 
-        if (args != null)
-            configBuilder.AddCommandLine(args);
+        //if (args != null)
+        //    configBuilder.AddCommandLine(args);
 
-        _configuration = configBuilder.Build();
+        IConfiguration configuration;
+
+        if (_externalConfig != null)
+        {
+            configuration = _externalConfig;
+        }
+        else
+        {
+            var builder = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json", optional: true)
+                .AddEnvironmentVariables();
+
+            if (args != null)
+                builder.AddCommandLine(args);
+
+            configuration = builder.Build();
+        }
+
+        _configuration = configuration;
 
         _services.AddLogging(logging =>
         {

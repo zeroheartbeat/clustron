@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Client;
 using Clustron.Client.Handlers;
@@ -30,24 +30,45 @@ public class ClustronClientBuilder
     private ClustronConfig? _config;
     private string[]? _args;
     private IConfiguration? _loggingConfig;
+    private IConfiguration? _fullConfig;
 
     /// <summary>
     /// Initializes the builder from a configuration section (e.g., appsettings.json).
     /// </summary>
-    public static ClustronClientBuilder FromConfiguration(IConfigurationSection section)
-    {
-        var config = new ClustronConfig();
-        section.Bind(config);
+    //public static ClustronClientBuilder FromConfiguration(IConfigurationSection section)
+    //{
+    //    var config = new ClustronConfig();
+    //    section.Bind(config);
 
-        return new ClustronClientBuilder { _config = config };
+    //    return new ClustronClientBuilder { _config = config };
+    //}
+    public static ClustronClientBuilder FromConfiguration(IConfiguration section)
+    {
+        var builder = new ClustronClientBuilder();
+        builder._config = section.Get<ClustronConfig>();
+        builder._fullConfig = section as IConfiguration ?? throw new InvalidOperationException("Invalid configuration section");
+        return builder;
+    }
+
+    public static ClustronClientBuilder FromConfiguration(IConfigurationSection section, IConfiguration fullConfig)
+    {
+        var builder = new ClustronClientBuilder();
+        builder._config = section.Get<ClustronConfig>();
+        builder._fullConfig = fullConfig;
+        return builder;
     }
 
     /// <summary>
     /// Sets logging config section (usually root IConfiguration) to pull Logging section from.
     /// </summary>
-    public ClustronClientBuilder WithLogging(IConfiguration config)
+    //public ClustronClientBuilder WithLogging(IConfiguration config)
+    //{
+    //    _loggingConfig = config;
+    //    return this;
+    //}
+    public ClustronClientBuilder WithLogging(IConfiguration loggingConfig)
     {
-        _loggingConfig = config;
+        _loggingConfig = loggingConfig;
         return this;
     }
 
@@ -71,13 +92,13 @@ public class ClustronClientBuilder
         // Step 0: Build your own service collection with logging FIRST
         var services = new ServiceCollection();
 
+        // Step 1: Register config and logging if provided
         if (_config != null)
             services.AddSingleton(_config);
 
         if (_loggingConfig != null)
         {
             var loggingSection = _loggingConfig.GetSection("Logging");
-
             services.AddLogging(logging =>
             {
                 logging.AddConfiguration(loggingSection);
@@ -85,11 +106,12 @@ public class ClustronClientBuilder
             });
         }
 
-        // Step 1: Create bootstrapper using prebuilt services
         var bootstrapper = new ClustronBootstrapper();
-        bootstrapper.UseServices(services); 
+        bootstrapper.UseServices(services);
 
-        // Step 2: Start cluster (will now use our logger factory)
+        if (_fullConfig != null)
+            bootstrapper.UseConfiguration(_fullConfig);
+
         bootstrapper.Start(_args ?? Array.Empty<string>());
 
         // Step 3: Everything else stays the same

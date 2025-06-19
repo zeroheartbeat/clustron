@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
@@ -13,6 +13,7 @@ using Clustron.Core.Discovery;
 using Clustron.Core.Helpers;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
+using Clustron.Core.Observability;
 using Clustron.Core.Serialization;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
@@ -29,17 +30,21 @@ public class DuplexTcpTransport : BaseTcpTransport
     private readonly RetryOptions _retryOptions;
     private readonly ClusterPeerManager _peerManager;
     private TcpListener? _listener;
+    private readonly IMetricContributor _metrics;
+
 
     public DuplexTcpTransport(
         int port,
         IClusterRuntime clusterRuntime,
         IMessageSerializer serializer,
+        IMetricContributor metrics,
         IClusterLoggerProvider loggerProvider,
         RetryOptions retryOptions)
         : base(clusterRuntime, serializer, loggerProvider.GetLogger<DuplexTcpTransport>())
     {
         _port = port;
         _peerManager = clusterRuntime.PeerManager;
+        _metrics = metrics;
         _retryOptions = retryOptions;
     }
 
@@ -159,6 +164,8 @@ public class DuplexTcpTransport : BaseTcpTransport
                 await stream.WriteAsync(length, 0, length.Length);
                 await stream.WriteAsync(body, 0, body.Length);
             }, _retryOptions.MaxAttempts, _retryOptions.DelayMilliseconds, _logger);
+
+            _metrics.Increment(MetricKeys.Messages.Sent);
         }
         catch (Exception ex)
         {

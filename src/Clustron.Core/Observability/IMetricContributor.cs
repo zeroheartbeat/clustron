@@ -4,14 +4,14 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 namespace Clustron.Core.Observability;
 
 public interface IMetricContributor
 {
     void Increment(string metricKey);
-    int GetTotal(string metricKey);
+    long GetTotal(string metricKey);
     int[] GetPerSecondRates(string metricKey, int seconds);
 }
 

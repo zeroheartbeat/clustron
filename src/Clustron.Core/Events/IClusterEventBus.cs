@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using System;
 using System.Collections.Generic;
@@ -17,7 +17,10 @@ namespace Clustron.Core.Events
     public interface IClusterEventBus
     {
         void Publish(IClusterEvent evt);
+
+        Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null);
         void Subscribe<T>(Action<T> handler) where T : IClusterEvent;
+        void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent;
     }
 }
 

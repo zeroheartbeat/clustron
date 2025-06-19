@@ -4,7 +4,7 @@
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: heartbeats.zero@gmail.com
+// To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Client;
 using Clustron.Client.Test;
@@ -34,37 +34,48 @@ using Microsoft.Extensions.Hosting;
 //await host.StartAsync();
 
 //var client = host.Services.GetRequiredService<IClustronClient>();
-var client = Clustron.Client.Clustron.Initialize("clustron-demo");
+var client = Clustron.Client.Clustron.Initialize("clustron-alpha", args);
 
 // ✅ Register a message handler
-client.OnMessageReceived<Customer>((customer, sender) =>
+client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
 {
     Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
     return Task.CompletedTask;
 });
 
-Console.WriteLine("Client started. Type customer names to send:");
+Console.WriteLine("Client started. Press any key to start sending messages...");
+Console.ReadLine();
 
+var random = new Random();
+long messageCount = 0;
 while (true)
 {
-    Console.Write("Enter customer name: ");
-    var name = Console.ReadLine();
-    if(string.IsNullOrEmpty(name) || name.Equals("x")) break;
-
-    var target = client.GetPeers().FirstOrDefault(p => p.NodeId != client.Self.NodeId);
-    if (target == null)
-    {
-        Console.WriteLine("No peers available.");
-        continue;
-    }
-
+    // Simulate a 100-byte payload
     var customer = new Customer
     {
-        Id = Random.Shared.Next(100, 999),
-        Name = name!
+        Id = random.Next(100, 999),
+        Name = new string('X', 96) // Assuming 'Id' is 4 bytes, pad name to make total ~100 bytes
     };
+    try
+    {
+        await client.Messaging.BroadcastAsync(customer);
+    }
+    catch (NotSupportedException ex)
+    {
+        Console.WriteLine(ex.Message);
+        break;
+    }
+    messageCount++;
+    if(messageCount % 100 == 0)
+        Console.WriteLine($"Total broadcasted messages {messageCount}");
 
-    await client.BroadcastAsync(customer);
-    Console.WriteLine($"Sent to all: {customer.Name}");
+    await Task.Delay(TimeSpan.FromSeconds(5));
 }
+
+Console.WriteLine("Press CTRL+C to stop");
+while (true)
+{
+    Console.ReadLine();
+}
+
 
