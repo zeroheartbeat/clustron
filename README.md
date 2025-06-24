@@ -100,9 +100,8 @@ Clustron aims to evolve into a general-purpose clustering core for distributed a
 ## 📄 Next Steps
 
 Check out:
-- [`REQUIREMENTS.md`](./REQUIREMENTS.md) for technical specifications
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) for system design and diagrams
-- [`INSTALL.md`](./INSTALL.md) to get started
+- [`ROADMAP.md`](./ROADMAP.md) for the roadmap
+
 
 ---
 
