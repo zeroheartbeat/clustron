@@ -5,6 +5,7 @@
 //
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
 using Clustron.Core.Events;
 using System;
 using System.Collections.Generic;
@@ -21,7 +22,13 @@ namespace Clustron.Client.Communication
         void OnMessageReceived<T>(Func<T, string, Task> handler);
         bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher);
 
-        Task PublishAsync<T>(T @event) where T : IClusterEvent;
+        public Task PublishAsync<T>(T @event, EventDispatchOptions? options = null)
+                                            where T : IClusterEvent;
+
         void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent;
+
+        void Subscribe<TEvent, TPayload>(Func<TEvent, Task> handler)
+    where TEvent : CustomClusterEvent<TPayload>, new();
+
     }
 }

@@ -6,6 +6,7 @@
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using System;
 using System.Collections.Generic;
@@ -24,6 +25,7 @@ namespace Clustron.Core.Events
         {
             NewLeader = newLeader;
             Epoch = epoch;
+            EventType = MessageTypes.LeaderChanged;
         }
     }
 

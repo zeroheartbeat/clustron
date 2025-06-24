@@ -26,7 +26,7 @@ public class ClusterViewBroadcasterBehavior : IRoleAwareBehavior
     private readonly IClusterCommunication _communication;
     private System.Timers.Timer? _timer;
 
-    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromMinutes(1);
 
     public string Name => "ClusterViewBroadcaster";
 
@@ -66,7 +66,7 @@ public class ClusterViewBroadcasterBehavior : IRoleAwareBehavior
             KnownPeers = peers
         };
 
-        var message = MessageBuilder.Create(_self.NodeId, MessageTypes.ClusterView, Guid.NewGuid().ToString(), view);
+        var message = MessageBuilder.Create<ClusterViewPayload>(_self.NodeId, MessageTypes.ClusterView, Guid.NewGuid().ToString(), view);
 
         foreach (var peer in peers)
         {

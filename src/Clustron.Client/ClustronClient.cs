@@ -7,7 +7,6 @@
 // To obtain a license for production, please contact: support@clustron.io
 
 using Clustron.Client.Communication;
-using Clustron.Client.Internals;
 using Clustron.Client.Management;
 using Clustron.Client.Models;
 using Clustron.Client.Monitoring;

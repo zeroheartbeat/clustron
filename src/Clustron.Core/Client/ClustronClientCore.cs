@@ -54,14 +54,15 @@ public class ClustronClientCore
         return _controller.Communication.Transport.SendAsync(_peerManager.GetPeerById(targetNodeId), message);
     }
 
-    public Task BroadcastAsync(Message message)
+    public Task BroadcastAsync(Message message, params string[] roles)
     {
-        return _controller.Communication.Transport.BroadcastAsync(message, GetPeersExceptRole(ClustronRoles.Member));
+        return _controller.Communication.Transport.BroadcastAsync(message, roles);
     }
 
-    public Task PublishAsync<T>(T @event) where T : IClusterEvent
+    public Task PublishAsync<T>(T @event, EventDispatchOptions? options) where T : IClusterEvent
     {
-        return _eventBus.PublishAsync(@event);
+        
+        return _eventBus.PublishAsync(@event, options);
     }
 
     public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
@@ -88,16 +89,5 @@ public class ClustronClientCore
 
     public bool IsPeerAlive(string nodeId) => _peerManager.IsAlive(nodeId);
 
-
-    private Message CreateMessage(string messageType, object payload)
-    {
-        return new Message
-        {
-            MessageType = messageType,
-            SenderId = _self.NodeId,
-            CorrelationId = Guid.NewGuid().ToString(),
-            Payload = _serializer.Serialize(payload)
-        };
-    }
 }
 

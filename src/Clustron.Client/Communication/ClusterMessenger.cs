@@ -5,9 +5,9 @@
 //
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
-using Clustron.Client.Internals;
 using Clustron.Client.Models;
 using Clustron.Core.Client;
+using Clustron.Core.Configuration;
 using Clustron.Core.Events;
 using Clustron.Core.Extensions;
 using Clustron.Core.Messaging;
@@ -35,43 +35,47 @@ namespace Clustron.Client.Communication
             if (!_core.Self.IsMember())
                 throw new NotSupportedException("Only member nodes can send messages to other clients.");
 
-            var payload = ClientMessageBuilder.Create<T>(data);
-            var message = MessageBuilder.Create<ClientPayload<T>>(
-            _core.Self.NodeId,                       // senderId
-            ClientMessageTypes.ClientMessage,        // type
-            Guid.NewGuid().ToString(),               // correlationId
-            payload);
+            var message = MessageBuilder.Create(
+                _core.Self.NodeId,
+                ClientMessageTypes.ClientMessage,
+                Guid.NewGuid().ToString(),
+                data);
 
-            await _core.BroadcastAsync(message);
+            await _core.BroadcastAsync(message, ClustronRoles.Member);
         }
 
         public async Task SendAsync<T>(string nodeId, T data)
         {
             if (!_core.Self.IsMember())
                 throw new NotSupportedException("Only member nodes can send messages to other clients.");
-            
-            var payload = ClientMessageBuilder.Create<T>(data);
 
-            var message = MessageBuilder.Create<ClientPayload<T>>(
-            _core.Self.NodeId,                       // senderId
-            ClientMessageTypes.ClientMessage,        // type
-            Guid.NewGuid().ToString(),               // correlationId
-            payload);
+            var message = MessageBuilder.Create(
+                _core.Self.NodeId,
+                ClientMessageTypes.ClientMessage,
+                Guid.NewGuid().ToString(),
+                data); // Send data directly
 
             await _core.SendAsync(message, nodeId);
         }
 
-        public Task PublishAsync<T>(T @event) where T : IClusterEvent
+        public Task PublishAsync<T>(T @event, EventDispatchOptions? options = null)
+                                            where T : IClusterEvent
         {
             if (!_core.Self.IsMember())
                 throw new NotSupportedException("Only member nodes can send messages to other clients.");
             
-            return _core.PublishAsync(@event);
+            return _core.PublishAsync(@event, options);
         }
 
         public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
         {
             _core.Subscribe(handler);
+        }
+
+        public void Subscribe<TEvent, TPayload>(Func<TEvent, Task> handler)
+                where TEvent : CustomClusterEvent<TPayload>, new()
+        {
+            _core.Subscribe<TEvent>(handler);
         }
 
         public void OnMessageReceived<T>(Func<T, string, Task> handler)
@@ -80,8 +84,8 @@ namespace Clustron.Client.Communication
 
             _typedDispatchers[messageType] = async (payloadBytes, senderId) =>
             {
-                var clientPayload = _core.Serializer.Deserialize<ClientPayload<T>>(payloadBytes);
-                await handler(clientPayload.Data, senderId);
+                var obj = _core.Serializer.Deserialize<T>(payloadBytes);
+                await handler(obj, senderId);
             };
         }
 

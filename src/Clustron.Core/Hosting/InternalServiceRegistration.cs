@@ -54,11 +54,11 @@ public static class InternalServiceRegistration
         services.AddSingleton(self);
         services.AddSingleton(loggerFactory);
 
-        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>());
-        services.AddSingleton<IClusterEventBus>(eventBus);
-
         var serializer = new JsonMessageSerializer();
         MessageBuilder.Configure(serializer);
+
+        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>(), serializer);
+        services.AddSingleton<IClusterEventBus>(eventBus);
 
         var discoveryProvider = new AdaptiveDiscoveryProvider(config.StaticNodes ?? []);
         var nullTransport = new NullTransport();
@@ -80,6 +80,7 @@ public static class InternalServiceRegistration
         services.AddSingleton<IClusterDiscovery>(sp => sp.GetRequiredService<ClusterContext>());
         services.AddSingleton<IElectionCoordinatorProvider>(sp => sp.GetRequiredService<ClusterContext>());
 
+        eventBus.Configure(context, self);
 
         services.AddSingleton<IElectionStrategy>(sp =>
                 new BullyElectionStrategy(

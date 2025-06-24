@@ -57,6 +57,12 @@ public class ClusterMessageRouter : IMessageRouter
 
     public async Task RouteAsync(Message message)
     {
+        if (string.IsNullOrWhiteSpace(message.TypeInfo))
+        {
+            _logger.LogError("Cannot route message with null TypeInfo. CorrelationId={CorrelationId}, Type={Type}", message.CorrelationId, message.TypeInfo);
+            return;
+        }
+
         if (_handlerMap.TryGetValue(message.MessageType, out var handler))
         {
             try

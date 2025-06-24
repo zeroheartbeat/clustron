@@ -23,6 +23,11 @@ namespace Clustron.Core.Serialization
 
         public object Deserialize(byte[] data, Type type) =>
             MessagePackSerializer.Deserialize(type, data);
+
+        public byte[] Serialize(Type type, object value)
+        {
+            throw new NotImplementedException();
+        }
     }
 }
 

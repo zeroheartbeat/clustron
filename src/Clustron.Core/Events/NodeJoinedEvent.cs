@@ -6,6 +6,7 @@
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using System;
 using System.Collections.Generic;
@@ -17,8 +18,11 @@ namespace Clustron.Core.Events
 {
     public sealed class NodeJoinedEvent : ClusterEventBase<NodeInfo>
     {
+        public NodeJoinedEvent(NodeInfo node) {
+            EventType = MessageTypes.NodeJoined;
+            Node = node;
+        }
         public NodeInfo Node { get; }
-        public NodeJoinedEvent(NodeInfo node) => Node = node;
     }
 }
 

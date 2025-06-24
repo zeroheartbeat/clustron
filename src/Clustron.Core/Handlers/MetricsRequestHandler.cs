@@ -62,13 +62,7 @@ namespace Clustron.Core.Handlers
             var snapshot = _snapshotProvider.CaptureSnapshot(request.DurationSeconds);
             snapshot.TimestampUtc = DateTime.UtcNow;
 
-            var reply = new Message
-            {
-                MessageType = MessageTypes.ClustronMetrics,
-                SenderId = _runtime.Self.NodeId,
-                CorrelationId = message.CorrelationId,
-                Payload = _serializer.Serialize(snapshot)
-            };
+            var reply = MessageBuilder.Create<ClusterMetricsSnapshot>(_runtime.Self.NodeId, MessageTypes.ClustronMetrics, message.CorrelationId, snapshot);
 
             var requester = _runtime.PeerManager.GetPeerById(message.SenderId);
             if (requester != null)

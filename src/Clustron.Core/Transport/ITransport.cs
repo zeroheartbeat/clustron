@@ -17,7 +17,7 @@ namespace Clustron.Core.Transport
         Task SendAsync(NodeInfo target, Message message);
         Task StartAsync(IMessageRouter router);          
         Task<Message> WaitForResponseAsync(string expectedSenderId, string correlationId, TimeSpan timeout);
-        Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null);
+        Task BroadcastAsync(Message message, params string[] roles);
         void RemoveConnection(string nodeId);
         Task<bool> CanReachNodeAsync(NodeInfo node);
         Task HandlePeerDownAsync(string nodeId);

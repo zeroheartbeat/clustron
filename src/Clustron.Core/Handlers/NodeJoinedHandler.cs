@@ -8,6 +8,7 @@
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Events;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Serialization;
@@ -34,16 +35,16 @@ public class NodeJoinedHandler : IMessageHandler
 
     public async Task HandleAsync(Message message)
     {
-        var node = _serializer.Deserialize<NodeInfo>(message.Payload);
+        var joinedEvent = _serializer.Deserialize<NodeJoinedEvent>(message.Payload);
 
-        if (node == null || string.IsNullOrEmpty(node.NodeId))
+        if (joinedEvent == null || string.IsNullOrEmpty(joinedEvent.Node.NodeId))
         {
             _logger.LogWarning("NodeJoinedHandler received invalid NodeInfo.");
             return;
         }
 
         // Register peer
-        _peerManager.RegisterPeer(node);
+        _peerManager.RegisterPeer(joinedEvent.Node);
 
         // OPTIONAL: If you plan to broadcast or notify later, leave the method async-ready
         await Task.CompletedTask;

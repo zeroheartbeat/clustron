@@ -6,10 +6,9 @@ using System.Threading.Tasks;
 
 namespace Clustron.Core.Events
 {
-    public interface IClusterEvent
+    public enum DeliveryScope
     {
-        ClusterEventScope Scope { get; }
-
-        string EventType { get; }
+        LocalOnly,
+        ClusterWide
     }
 }

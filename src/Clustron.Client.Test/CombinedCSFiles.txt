@@ -1,0 +1,221 @@
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\Customer.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Test
+{
+    public class Customer
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = default!;
+    }
+
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\Program.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client;
+using Clustron.Client.Test;
+using Clustron.Core.Events;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+//// ✅ Pass command-line args to host builder
+//var host = Host.CreateDefaultBuilder(args)
+//    .ConfigureAppConfiguration((ctx, config) =>
+//    {
+//        config.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+//              .AddEnvironmentVariables()
+//              .AddCommandLine(args); // 👈 Accepts --Clustron:Port=4001 etc.
+//    })
+//    .ConfigureServices((ctx, services) =>
+//    {
+//        services.AddClustronClient(ctx.Configuration.GetSection("Clustron"));
+//    })
+//    .Build();
+
+// ✅ Log who this node is
+//var config = host.Services.GetRequiredService<IConfiguration>();
+//var nodeName = config["Clustron:NodeName"] ?? "Unnamed";
+//Console.WriteLine($"Running as {nodeName}");
+
+//await host.StartAsync();
+
+//var client = host.Services.GetRequiredService<IClustronClient>();
+var client = Clustron.Client.Clustron.Initialize("clustron-alpha", args);
+
+//await SendAndReceiveItems(client);
+await PubSubMessages(client);
+
+static async Task SendAndReceiveItems(IClustronClient client)
+{
+    // ✅ Register a message handler
+    client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
+    {
+        Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
+        return Task.CompletedTask;
+    });
+
+    Console.WriteLine("Client started. Press any key to start sending messages...");
+    Console.ReadLine();
+
+    var random = new Random();
+    long messageCount = 0;
+    while (true)
+    {
+        // Simulate a 100-byte payload
+        var customer = new Customer
+        {
+            Id = random.Next(100, 999),
+            Name = new string('X', 96) // Assuming 'Id' is 4 bytes, pad name to make total ~100 bytes
+        };
+        try
+        {
+            await client.Messaging.BroadcastAsync(customer);
+        }
+        catch (NotSupportedException ex)
+        {
+            Console.WriteLine(ex.Message);
+            break;
+        }
+        messageCount++;
+        if (messageCount % 100 == 0)
+            Console.WriteLine($"Total broadcasted messages {messageCount}");
+
+        await Task.Delay(TimeSpan.FromSeconds(5));
+    }
+
+    Console.WriteLine("Press CTRL+C to stop");
+    while (true)
+    {
+        Console.ReadLine();
+    }
+}
+
+static async Task PubSubMessages(IClustronClient client)
+{
+    //Console.WriteLine("Press Enter to continue...");
+    //Console.ReadLine();
+
+    client.Messaging.Subscribe<CustomClusterEvent<Customer>>(async evt =>
+    {
+        Console.WriteLine($"[ClusterEvent] User logged in: {evt.Payload.Name} from {evt.Publisher}");
+        await Task.CompletedTask;
+    });
+
+    int index = 1;
+    while (true)
+    {
+        Console.WriteLine("Enter to send a message...");
+        Console.ReadLine();
+        var payload = new Customer
+        {
+            Name = "alice" + index,
+            Id = index
+        };
+
+        var evt = new CustomClusterEvent<Customer>("UserLoggedIn", payload);
+        evt.Publisher = client.Management.Self.NodeId;
+        await client.Messaging.PublishAsync(evt);
+
+        await Task.Delay(TimeSpan.FromSeconds(20));
+
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\TestEvent.cs
+using Clustron.Core.Events;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Test
+{
+    public class TestEvent : ClusterEventBase<TestEvent>
+    {
+        public TestEvent()
+        {
+        }
+
+        public int EventId { get; set; }
+        public string SenderName { get; set; }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+// <autogenerated />
+using System;
+using System.Reflection;
+[assembly: global::System.Runtime.Versioning.TargetFrameworkAttribute(".NETCoreApp,Version=v9.0", FrameworkDisplayName = ".NET 9.0")]
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\obj\Debug\net9.0\Clustron.Client.Test.AssemblyInfo.cs
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("Clustron.Client.Test")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2ae416f9d5e65eddb189fd5398116654dff5631a")]
+[assembly: System.Reflection.AssemblyProductAttribute("Clustron.Client.Test")]
+[assembly: System.Reflection.AssemblyTitleAttribute("Clustron.Client.Test")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client.Test\obj\Debug\net9.0\Clustron.Client.Test.GlobalUsings.g.cs
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.IO;
+global using global::System.Linq;
+global using global::System.Net.Http;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+

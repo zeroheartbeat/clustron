@@ -18,6 +18,7 @@ using Clustron.Core.Serialization;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -90,10 +91,21 @@ public class DuplexTcpTransport : BaseTcpTransport
                 try
                 {
                     int read = await stream.ReadAsync(lengthBuffer, 0, 4);
-                    if (read == 0) break;
+                    if (read == 0)
+                    {
+                        _logger.LogError("HandleClientAsync: Stream read returned 0. Remote: {RemoteEndPoint}, Local: {LocalEndPoint}",
+                            ((IPEndPoint)client.Client.RemoteEndPoint)?.ToString(),
+                            ((IPEndPoint)client.Client.LocalEndPoint)?.ToString());
+
+                        break;
+                    }
 
                     int length = BitConverter.ToInt32(lengthBuffer, 0);
-                    if (length <= 0 || length > 1024 * 10) break;
+                    if (length <= 0 || length > 1024 * 10)
+                    {
+                        _logger.LogCritical("HandleClientAsync: Invalid message length received: {Length}", length);
+                        break;
+                    }
 
                     var payloadBuffer = ArrayPool<byte>.Shared.Rent(length);
                     try
@@ -114,6 +126,8 @@ public class DuplexTcpTransport : BaseTcpTransport
                         }
                         else
                         {
+                            if(message.MessageType == MessageTypes.NodeLeft)
+                                _logger.LogCritical("Something unexpected happened. CorrelationId: {CorrelationId} for message {message}", message.CorrelationId, message.ToString());
                             await router.RouteAsync(message);
                         }
                     }
@@ -130,7 +144,7 @@ public class DuplexTcpTransport : BaseTcpTransport
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("Inbound connection failed: {Error}", ex.Message);
+            _logger.LogCritical("Inbound connection failed: {Error}", ex.ToString());
         }
         finally
         {
@@ -216,12 +230,17 @@ public class DuplexTcpTransport : BaseTcpTransport
         try
         {
             var conn = await GetOrCreateConnectionAsync(node);
-            return conn?.IsConnected == true;
+            if (conn?.IsConnected == true)
+            {
+                conn.LastUsedUtc = DateTime.UtcNow;
+                return true;
+            }
         }
         catch
         {
-            return false;
         }
+
+        return false;
     }
 
     public override void RemoveConnection(string nodeId)
@@ -233,16 +252,28 @@ public class DuplexTcpTransport : BaseTcpTransport
         }
     }
 
-    public override Task HandlePeerDownAsync(string nodeId)
+    public override async Task HandlePeerDownAsync(string nodeId)
     {
         var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
-        if (node != null)
+        if (node == null)
         {
-            _peerManager.MarkPeerDown(node);
+            _logger.LogWarning("HandlePeerDownAsync called, but node {NodeId} not found in registry.", nodeId);
+            return;
         }
 
-        RemoveConnection(nodeId);
-        return Task.CompletedTask;
+        // Vet and remove via central peer manager
+        bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+        {
+            bool reachable = await CanReachNodeAsync(p);
+            _logger.LogDebug("Vet before removal: node {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+            return !reachable;
+        });
+
+        if (removed)
+        {
+            RemoveConnection(nodeId);
+        }
     }
+
 }
 

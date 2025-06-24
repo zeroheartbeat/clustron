@@ -8,6 +8,7 @@
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Events;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Serialization;
@@ -37,12 +38,12 @@ namespace Clustron.Core.Handlers
 
         public async Task HandleAsync(Message message)
         {
-            var targetNodeId = _serializer.Deserialize<string>(message.Payload);
-            _logger.LogWarning("Received HeartbeatSuspect for node: {NodeId} from {Sender}", targetNodeId, message.SenderId);
+            var suspect = _serializer.Deserialize<HeartbeatSuspect>(message.Payload);
+            _logger.LogWarning("Received HeartbeatSuspect for node: {NodeId} from {Sender}", suspect.SuspectedNode.NodeId, message.SenderId);
 
             if (_clusterLeader.CurrentLeader?.NodeId == _localNode.NodeId)
             {
-                await _clusterLeader.HandleHeartbeatSuspectAsync(targetNodeId, message.SenderId);
+                await _clusterLeader.HandleHeartbeatSuspectAsync(suspect.SuspectedNode.NodeId, message.SenderId);
             }
         }
     }

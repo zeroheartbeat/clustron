@@ -67,8 +67,10 @@ public class PeerRegistry
     public NodeInfo GetPeer(string id) =>
                 _activePeers.Values.Where(p => p.NodeId == id).FirstOrDefault();
 
-    public IEnumerable<NodeInfo> GetPeersWithRole(string role) =>
-    _activePeers.Values.Where(p => p.HasRole(role));
+    public IEnumerable<NodeInfo> GetPeersWithRole(params string[] roles) =>
+                roles.Length == 0
+                    ? _activePeers.Values
+                    : _activePeers.Values.Where(p => roles.Any(r => p.HasRole(r)));
 
     public IEnumerable<NodeInfo> GetPeersWithAnyRole(params string[] roles)
     {

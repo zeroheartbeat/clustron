@@ -12,6 +12,7 @@ using Clustron.Core.Bootstrap;
 using Clustron.Core.Client;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
+using Clustron.Core.Handlers;
 using Clustron.Core.Hosting;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
@@ -130,6 +131,9 @@ public class ClustronClientBuilder
 
         var router = resolved.GetRequiredService<IMessageRouter>();
         router?.AddHandler(handler);
+
+        var eventHandler = new ClusterEventMessageHandler(controller.Runtime.EventBus, serializer, controller.Runtime.Self.NodeId);
+        router?.AddHandler(eventHandler);
 
         var nodeManager = new ClustronNodeManager(bootstrapper, config);
         return new ClustronClientHost(nodeManager, client);

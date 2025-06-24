@@ -38,7 +38,7 @@ public abstract class BaseTcpTransport : ITransport
 
         _logger = logger;
 
-        _timer = new Timer(_ => CleanupIdleConnections(TimeSpan.FromMinutes(10)), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+        _timer = new Timer(_ => CleanupIdleConnections(TimeSpan.FromMinutes(1)), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
     }
 
     public abstract Task StartAsync(IMessageRouter router);
@@ -46,13 +46,10 @@ public abstract class BaseTcpTransport : ITransport
     public abstract void RemoveConnection(string nodeId);
     public abstract Task<bool> CanReachNodeAsync(NodeInfo node);
 
-    public virtual async Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null)
+    public virtual async Task BroadcastAsync(Message message, params string[] roles)
     {
-        _logger.LogInformation("Broadcasting LeaderChanged to: {Peers}", string.Join(",", _peerManager.GetActivePeers().Select(p => p.NodeId)));
-
-        var excludedIds = exclude?.Select(n => n.NodeId).ToHashSet() ?? new();
-        var peers = _peerManager.GetActivePeers()
-            .Where(p => p.NodeId != message.SenderId && !excludedIds.Contains(p.NodeId));
+        var peers = _peerManager.GetPeersWithRole(roles)
+                        .Where(p => p.NodeId != message.SenderId);
 
         await Task.WhenAll(peers.Select(p => SendAsync(p, message)));
     }
@@ -96,11 +93,11 @@ public abstract class BaseTcpTransport : ITransport
         {
             if (DateTime.UtcNow - conn.Value.LastUsedUtc > idleTimeout)
             {
-                _logger.LogInformation(
+                _logger.LogWarning(
                 "Disposing idle connection to {RemoteNodeId} (idle for {IdleDuration} seconds)",
                 conn.Value.RemoteNodeId, (int)idleTimeout.TotalSeconds);
 
-                RemoveConnection(conn.Value.RemoteNodeId);
+                HandlePeerDownAsync(conn.Value.RemoteNodeId);
             }
         }
     }

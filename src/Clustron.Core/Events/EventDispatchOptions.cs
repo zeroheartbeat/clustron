@@ -19,6 +19,8 @@ namespace Clustron.Core.Events
         public DispatchPolicy Policy { get; set; } = DispatchPolicy.Ordered;
         public int MaxRetryAttempts { get; set; } = 3;
         public int RetryDelayMilliseconds { get; set; } = 200;
+
+        public DeliveryScope Scope { get; set; } = DeliveryScope.ClusterWide; // default
     }
 
 }

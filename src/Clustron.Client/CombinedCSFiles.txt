@@ -1,0 +1,1232 @@
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\ClientMessageTypes.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: .DataServices
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client
+{
+    public class ClientMessageTypes
+    {
+        public const string ClientMessage = "client.message";
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Clustron.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client.Bootstrap;
+using Clustron.Client.Handlers;
+using Clustron.Core.Bootstrap;
+using Clustron.Core.Client;
+using Clustron.Core.Cluster;
+using Clustron.Core.Configuration;
+using Clustron.Core.Serialization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client
+{
+    public static class Clustron
+    {
+        private static IClustronClient? _client;
+        private static IClustronClientHost? _host;
+
+        /// <summary>
+        /// Initialize Clustron using the default configuration from appsettings.json and a clusterId.
+        /// </summary>
+        public static IClustronClient Initialize(string clusterId, string[] args = null)
+        {
+            var configBuilder = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .AddEnvironmentVariables();
+
+            if (args != null && args.Length > 0)
+            {
+                configBuilder.AddCommandLine(args);
+            }
+
+            var config = configBuilder.Build();
+
+            return Initialize(config, clusterId);
+        }
+
+        /// <summary>
+        /// Initialize Clustron using a custom IConfiguration and clusterId.
+        /// </summary>
+        public static IClustronClient Initialize(IConfiguration config, string clusterId)
+        {
+            var section = config.GetSection("Clustron");
+            var boundConfig = new ClustronConfig();
+            section.Bind(boundConfig);
+
+            if (!string.Equals(boundConfig.ClusterId, clusterId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"ClusterId '{clusterId}' does not match config (found '{boundConfig.ClusterId ?? "null"}').");
+            }
+
+            var builder = ClustronClientBuilder
+                .FromConfiguration(section, config)
+                .WithLogging(config);
+
+            _host = builder.Build();
+            _client = _host.Client;
+
+            return _client;
+        }
+
+        public static IClustronClient Client =>
+            _client ?? throw new InvalidOperationException("Clustron is not initialized.");
+
+        public static void Shutdown()
+        {
+            _host?.NodeManager.StopAsync().Wait();
+            _host = null;
+            _client = null;
+        }
+    }
+
+
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\ClustronClient.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client.Communication;
+using Clustron.Client.Internals;
+using Clustron.Client.Management;
+using Clustron.Client.Models;
+using Clustron.Client.Monitoring;
+using Clustron.Core.Client;
+using Clustron.Core.Messaging;
+using Clustron.Core.Models;
+
+namespace Clustron.Client;
+
+public class ClustronClient : IClustronClient
+{
+    public IClusterManager Management { get; }
+    public IMessenger Messaging { get; }
+    public IMonitor Monitoring { get; }
+
+    public ClustronClient(ClustronClientCore core)
+    {
+        Management = new ClusterManager(core);
+        Messaging = new ClusterMessenger(core);
+        Monitoring = new ClusterMonitor(core);
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\ClustronClientHost.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+namespace Clustron.Client;
+
+internal class ClustronClientHost : IClustronClientHost
+{
+    public IClustronNodeManager NodeManager { get; }
+    public IClustronClient Client { get; }
+
+    public ClustronClientHost(IClustronNodeManager nodeManager, IClustronClient client)
+    {
+        NodeManager = nodeManager;
+        Client = client;
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\ClustronNodeManager.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Core.Bootstrap;
+using Clustron.Core.Configuration;
+using Clustron.Core.Hosting;
+
+namespace Clustron.Client;
+
+internal class ClustronNodeManager : IClustronNodeManager
+{
+    private readonly ClustronBootstrapper _bootstrapper;
+    private readonly ClustronConfig _config;
+    private bool _isRunning;
+
+    public ClustronNodeManager(ClustronBootstrapper bootstrapper, ClustronConfig config)
+    {
+        _bootstrapper = bootstrapper;
+        _config = config;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        _bootstrapper.Start();
+        _isRunning = true;
+        await Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        _isRunning = false;
+        return Task.CompletedTask;
+    }
+
+    public bool IsRunning => _isRunning;
+    public ClustronConfig Configuration => _config;
+    public string NodeId => _config.ClusterId ?? "unknown";
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\IClustronClient.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+// File: Interfaces/IClustronClient.cs
+using Clustron.Client;
+using Clustron.Client.Communication;
+using Clustron.Client.Management;
+using Clustron.Client.Models;
+using Clustron.Client.Monitoring;
+using Clustron.Core.Messaging;
+
+namespace Clustron.Client;
+
+public interface IClustronClient
+{
+    IClusterManager Management { get; }
+    IMessenger Messaging { get; }
+    IMonitor Monitoring { get; }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\IClustronClientHost.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: .DataServices
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client
+{
+    public interface IClustronClientHost
+    {
+        IClustronNodeManager NodeManager { get; }
+        IClustronClient Client { get; }
+    }
+
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\IClustronNodeManager.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Core.Configuration;
+
+namespace Clustron.Client;
+
+public interface IClustronNodeManager
+{
+    Task StartAsync(CancellationToken cancellationToken = default);
+    Task StopAsync(CancellationToken cancellationToken = default);
+    bool IsRunning { get; }
+
+    ClustronConfig Configuration { get; } 
+    string NodeId { get; }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\ServiceCollectionExtensions.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client;
+using Clustron.Client.Bootstrap;
+using Clustron.Client.Models;
+using Clustron.Core.Client;
+using Clustron.Core.Cluster;
+using Clustron.Core.Messaging;
+using Clustron.Core.Serialization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+namespace Clustron.Client;
+
+/// <summary>
+/// Provides extension methods to register the Clustron client into a DI container.
+/// </summary>
+public static class ServiceCollectionExtensions
+{
+    /// <summary>
+    /// Registers the Clustron client and its dependencies into the service collection.
+    /// Ensure ClustronCore has already been configured.
+    /// </summary>
+    public static IServiceCollection AddClustronClient(this IServiceCollection services)
+    {
+        // Register ClustronClientCore using required services from Core
+        services.TryAddSingleton<ClustronClientCore>(sp =>
+        {
+            var controller = sp.GetRequiredService<ClusterNodeControllerBase>();
+            var serializer = sp.GetRequiredService<IMessageSerializer>();
+            return new ClustronClientCore(controller, serializer);
+        });
+
+        // Register the main public-facing interface
+        services.TryAddSingleton<IClustronClient>(sp =>
+        {
+            var core = sp.GetRequiredService<ClustronClientCore>();
+            return new ClustronClient(core);
+        });
+
+        return services;
+    }
+
+    public static IServiceCollection AddClustronClient(this IServiceCollection services, IConfigurationSection configSection)
+    {
+        var builder = ClustronClientBuilder.FromConfiguration(configSection);
+        var host = builder.Build();
+
+        services.AddSingleton<IClustronClientHost>(host);
+        services.AddSingleton<IClustronClient>(host.Client);
+        services.AddSingleton<IClustronNodeManager>(host.NodeManager);
+
+        return services;
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Bootstrap\ClustronClientBuilder.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client;
+using Clustron.Client.Handlers;
+using Clustron.Core.Bootstrap;
+using Clustron.Core.Client;
+using Clustron.Core.Cluster;
+using Clustron.Core.Configuration;
+using Clustron.Core.Handlers;
+using Clustron.Core.Hosting;
+using Clustron.Core.Messaging;
+using Clustron.Core.Models;
+using Clustron.Core.Serialization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace Clustron.Client.Bootstrap;
+
+/// <summary>
+/// Modified version of ClustronClientBuilder that supports injecting logging config.
+/// </summary>
+public class ClustronClientBuilder
+{
+    private ClustronConfig? _config;
+    private string[]? _args;
+    private IConfiguration? _loggingConfig;
+    private IConfiguration? _fullConfig;
+
+    /// <summary>
+    /// Initializes the builder from a configuration section (e.g., appsettings.json).
+    /// </summary>
+    //public static ClustronClientBuilder FromConfiguration(IConfigurationSection section)
+    //{
+    //    var config = new ClustronConfig();
+    //    section.Bind(config);
+
+    //    return new ClustronClientBuilder { _config = config };
+    //}
+    public static ClustronClientBuilder FromConfiguration(IConfiguration section)
+    {
+        var builder = new ClustronClientBuilder();
+        builder._config = section.Get<ClustronConfig>();
+        builder._fullConfig = section as IConfiguration ?? throw new InvalidOperationException("Invalid configuration section");
+        return builder;
+    }
+
+    public static ClustronClientBuilder FromConfiguration(IConfigurationSection section, IConfiguration fullConfig)
+    {
+        var builder = new ClustronClientBuilder();
+        builder._config = section.Get<ClustronConfig>();
+        builder._fullConfig = fullConfig;
+        return builder;
+    }
+
+    /// <summary>
+    /// Sets logging config section (usually root IConfiguration) to pull Logging section from.
+    /// </summary>
+    //public ClustronClientBuilder WithLogging(IConfiguration config)
+    //{
+    //    _loggingConfig = config;
+    //    return this;
+    //}
+    public ClustronClientBuilder WithLogging(IConfiguration loggingConfig)
+    {
+        _loggingConfig = loggingConfig;
+        return this;
+    }
+
+    public ClustronClientBuilder WithOverrides(Action<ClustronConfig> overrideAction)
+    {
+        if (_config == null)
+            _config = new ClustronConfig();
+
+        overrideAction(_config);
+        return this;
+    }
+
+    public ClustronClientBuilder WithCommandLineArgs(string[] args)
+    {
+        _args = args;
+        return this;
+    }
+
+    public IClustronClientHost Build()
+    {
+        // Step 0: Build your own service collection with logging FIRST
+        var services = new ServiceCollection();
+
+        // Step 1: Register config and logging if provided
+        if (_config != null)
+            services.AddSingleton(_config);
+
+        if (_loggingConfig != null)
+        {
+            var loggingSection = _loggingConfig.GetSection("Logging");
+            services.AddLogging(logging =>
+            {
+                logging.AddConfiguration(loggingSection);
+                logging.AddConsole();
+            });
+        }
+
+        var bootstrapper = new ClustronBootstrapper();
+        bootstrapper.UseServices(services);
+
+        if (_fullConfig != null)
+            bootstrapper.UseConfiguration(_fullConfig);
+
+        bootstrapper.Start(_args ?? Array.Empty<string>());
+
+        // Step 3: Everything else stays the same
+        var resolved = bootstrapper.Services;
+
+        var config = _config ?? resolved.GetRequiredService<ClustronConfig>();
+        var controller = resolved.GetRequiredService<ClusterNodeControllerBase>();
+        var serializer = resolved.GetRequiredService<IMessageSerializer>();
+
+        var clientCore = new ClustronClientCore(controller, serializer);
+        var client = new ClustronClient(clientCore);
+
+        var handler = new ClientMessageHandler(
+            client,
+            resolved.GetRequiredService<ILogger<ClientMessageHandler>>());
+
+        var router = resolved.GetRequiredService<IMessageRouter>();
+        router?.AddHandler(handler);
+
+        var eventHandler = new ClusterEventMessageHandler(controller.Runtime.EventBus, serializer, controller.Runtime.Self.NodeId);
+        router?.AddHandler(eventHandler);
+
+        var nodeManager = new ClustronNodeManager(bootstrapper, config);
+        return new ClustronClientHost(nodeManager, client);
+    }
+
+
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Communication\ClusterMessenger.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Internals;
+using Clustron.Client.Models;
+using Clustron.Core.Client;
+using Clustron.Core.Events;
+using Clustron.Core.Extensions;
+using Clustron.Core.Messaging;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Communication
+{
+    public class ClusterMessenger : IMessenger
+    {
+        private readonly ClustronClientCore _core;
+        private readonly Dictionary<string, Func<byte[], string, Task>> _typedDispatchers = new();
+
+
+        public ClusterMessenger(ClustronClientCore core)
+        {
+            _core = core;
+        }
+
+        public async Task BroadcastAsync<T>(T data)
+        {
+            if (!_core.Self.IsMember())
+                throw new NotSupportedException("Only member nodes can send messages to other clients.");
+
+            var payload = ClientMessageBuilder.Create<T>(data);
+            var message = MessageBuilder.Create<ClientPayload<T>>(
+            _core.Self.NodeId,                       // senderId
+            ClientMessageTypes.ClientMessage,        // type
+            Guid.NewGuid().ToString(),               // correlationId
+            payload);
+
+            await _core.BroadcastAsync(message);
+        }
+
+        public async Task SendAsync<T>(string nodeId, T data)
+        {
+            if (!_core.Self.IsMember())
+                throw new NotSupportedException("Only member nodes can send messages to other clients.");
+            
+            var payload = ClientMessageBuilder.Create<T>(data);
+
+            var message = MessageBuilder.Create<ClientPayload<T>>(
+            _core.Self.NodeId,                       // senderId
+            ClientMessageTypes.ClientMessage,        // type
+            Guid.NewGuid().ToString(),               // correlationId
+            payload);
+
+            await _core.SendAsync(message, nodeId);
+        }
+
+        public Task PublishAsync<T>(T @event, EventDispatchOptions? options = null)
+                                            where T : IClusterEvent
+        {
+            if (!_core.Self.IsMember())
+                throw new NotSupportedException("Only member nodes can send messages to other clients.");
+            
+            return _core.PublishAsync(@event, options);
+        }
+
+        public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
+        {
+            _core.Subscribe(handler);
+        }
+
+        public void Subscribe<TEvent, TPayload>(Func<TEvent, Task> handler)
+                where TEvent : CustomClusterEvent<TPayload>, new()
+        {
+            _core.Subscribe<TEvent>(handler);
+        }
+
+        public void OnMessageReceived<T>(Func<T, string, Task> handler)
+        {
+            var messageType = ClientMessageTypes.ClientMessage;
+
+            _typedDispatchers[messageType] = async (payloadBytes, senderId) =>
+            {
+                var clientPayload = _core.Serializer.Deserialize<ClientPayload<T>>(payloadBytes);
+                await handler(clientPayload.Data, senderId);
+            };
+        }
+
+        public bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher)
+        {
+            return _typedDispatchers.TryGetValue(messageType, out dispatcher);
+        }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Communication\IMessenger.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
+using Clustron.Core.Events;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Communication
+{
+    public interface IMessenger
+    {
+        Task SendAsync<T>(string nodeId, T payload);
+        Task BroadcastAsync<T>(T payload);
+        void OnMessageReceived<T>(Func<T, string, Task> handler);
+        bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher);
+
+        public Task PublishAsync<T>(T @event, EventDispatchOptions? options = null)
+                                            where T : IClusterEvent;
+
+        void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent;
+
+        void Subscribe<TEvent, TPayload>(Func<TEvent, Task> handler)
+    where TEvent : CustomClusterEvent<TPayload>, new();
+
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Extensions\Class1.cs
+using Clustron.Client.Communication;
+using Clustron.Client.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Extensions
+{
+    public static class ClusterMessengerExtensions
+    {
+        public static void SubscribeClusterEvent<TPayload>(
+            this IMessenger messenger,
+            Func<CustomClusterEvent<TPayload>, Task> handler)
+        {
+            messenger.Subscribe<CustomClusterEvent<TPayload>, TPayload>(handler);
+        }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Extensions\NodeInfoExtensions.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
+using Clustron.Core.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
+using System.Xml.Linq;
+
+namespace Clustron.Client.Extensions
+{
+    public static class NodeInfoExtensions
+    {
+        public static ClusterNode ToClusterNode(this NodeInfo node)
+        {
+            return new ClusterNode
+            {
+                NodeId = node.NodeId,
+                Host = node.Host,
+                Port = node.Port,
+                Roles = node.Roles,
+            };
+        }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Handlers\ClientMessageHandler.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Abstractions;
+using Clustron.Client;
+using Clustron.Client.Models;
+using Clustron.Core.Messaging;
+using Clustron.Core.Serialization;
+using Microsoft.Extensions.Logging;
+
+namespace Clustron.Client.Handlers;
+
+public class ClientMessageHandler : IMessageHandler
+{
+    public string Type => ClientMessageTypes.ClientMessage;
+
+    private readonly IClustronClient _client;
+    private readonly ILogger<ClientMessageHandler> _logger;
+
+    public ClientMessageHandler(
+        IClustronClient client,
+        ILogger<ClientMessageHandler> logger)
+    {
+        _client = client;
+        _logger = logger;
+    }
+
+    public async Task HandleAsync(Message message)
+    {
+        if (!_client.Messaging.TryGetHandler(message.MessageType, out var dispatcher))
+        {
+            _logger.LogWarning("No handler registered for message type: {Type}", message.MessageType);
+            return;
+        }
+
+        try
+        {
+            await dispatcher(message.Payload, message.SenderId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error dispatching message: {Type}", message.MessageType);
+        }
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Internals\ClientMessageBuilder.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+using Clustron.Client.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Internals
+{
+    class ClientMessageBuilder
+    {
+        public static ClientPayload<T> Create<T>(T data, Dictionary<string, string>? metaData = null)
+        {
+            return new ClientPayload<T>
+            {
+                Data = data,
+                Timestamp = DateTime.UtcNow,
+                Metadata = metaData ?? new Dictionary<string, string>()
+            };
+        }
+
+    }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Internals\NodeMapper.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+// File: Internal/NodeMapper.cs
+using Clustron.Client.Models;
+using Clustron.Core.Models;
+
+namespace Clustron.Client.Internal;
+
+internal static class NodeMapper
+{
+    public static ClusterNode ToClient(NodeInfo core) => new()
+    {
+        NodeId = core.NodeId,
+        Host = core.Host,
+        Port = core.Port,
+        Roles = core.Roles ?? new List<string>()
+    };
+
+    public static NodeInfo ToCore(ClusterNode client) => new()
+    {
+        NodeId = client.NodeId,
+        Host = client.Host,
+        Port = client.Port,
+        Roles = client.Roles.ToList()
+    };
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Management\ClusterManager.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Extensions;
+using Clustron.Client.Models;
+using Clustron.Core.Client;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Management
+{
+    public class ClusterManager : IClusterManager
+    {
+        private readonly ClustronClientCore _core;
+
+        public ClusterManager(ClustronClientCore core)  
+        { 
+            _core = core;
+
+            _core.NodeJoined += node => NodeJoined?.Invoke(node.ToClusterNode());
+            _core.NodeLeft += node => NodeLeft?.Invoke(node.ToClusterNode());
+            _core.LeaderChanged += (leader, epoch) => LeaderChanged?.Invoke(leader.ToClusterNode(), epoch);
+        }
+
+        public ClusterNode Self => _core.Self.ToClusterNode();
+
+        public event Action<ClusterNode> NodeJoined;
+        public event Action<ClusterNode> NodeLeft;
+        public event Action<ClusterNode, int> LeaderChanged;
+
+        public int GetCurrentEpoch()
+        {
+            throw new NotImplementedException();
+        }
+
+        public ClusterNode? GetCurrentLeader()
+            => _core.GetCurrentLeader()?.ToClusterNode();
+
+        public IEnumerable<ClusterNode> GetPeers()
+            => _core.GetMembers().Select(n => n.ToClusterNode());
+
+        public IEnumerable<ClusterNode> GetPeersByRole(string role)
+            => _core.GetPeersByRole(role).Select(n => n.ToClusterNode());
+
+        public bool IsPeerAlive(string nodeId)
+            => _core.IsPeerAlive(nodeId);
+
+        public Task StartAsync()
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task StopAsync()
+        {
+            throw new NotImplementedException();
+        }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Management\IClusterManager.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Management
+{
+    public interface IClusterManager
+    {
+        Task StartAsync();
+        Task StopAsync();
+        ClusterNode Self { get; }
+        ClusterNode? GetCurrentLeader();
+        int GetCurrentEpoch();
+        IEnumerable<ClusterNode> GetPeers();
+
+        IEnumerable<ClusterNode> GetPeersByRole(string role);
+        bool IsPeerAlive(string nodeId);
+
+        // Cluster events
+        event Action<ClusterNode> NodeJoined;
+        event Action<ClusterNode> NodeLeft;
+        event Action<ClusterNode, int> LeaderChanged;
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\ClientPayload.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+namespace Clustron.Client.Models;
+
+/// <summary>
+/// Wraps application-level data with basic metadata for routing, logging, or auditing.
+/// </summary>
+public class ClientPayload<T> : ClientPayloadBase
+{
+    /// <summary>
+    /// The actual application-specific payload.
+    /// </summary>
+    public T Data { get; set; } = default!;
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\ClientPayloadBase.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+namespace Clustron.Client.Models;
+
+public abstract class ClientPayloadBase
+{
+    public DateTime Timestamp { get; set; }
+    public Dictionary<string, string>? Metadata { get; set; }
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\ClusterMetrics.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Models
+{
+    public class ClusterMetrics
+    {
+        public int TotalMessagesSent { get; set; }
+        public int ActivePeers { get; set; }
+        public double AvgLatencyMs { get; set; }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\ClusterNode.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
+// File: Models/ClusterNode.cs
+namespace Clustron.Client.Models;
+
+public class ClusterNode
+{
+    public string NodeId { get; set; } = default!;
+    public string? Host { get; set; }
+    public int Port { get; set; }
+    public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
+}
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\CustomClusterEvent.cs
+using Clustron.Core.Events;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Models
+{
+    public class CustomClusterEvent<T> : ClusterEventBase<T>, ICustomClusterEvent
+    {
+        public CustomClusterEvent() { }
+
+        public CustomClusterEvent(string eventType, T payload)
+        {
+            EventType = eventType;
+            Payload = payload;
+        }
+
+        public string EventType { get; set; } = default!;
+        public T Payload { get; set; } = default!;
+
+        object? ICustomClusterEvent.Payload => Payload;
+
+        public string? Publisher { get; set; }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\ICustomClusterEvent.cs
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Models
+{
+    public interface ICustomClusterEvent
+    {
+        string EventType { get; }
+        object? Payload { get; }
+        string? Publisher { get; set; }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Models\NodeHealthStatus.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Models
+{
+    public class NodeHealthStatus
+    {
+        public string NodeId { get; set; } = string.Empty;
+        public bool IsAlive { get; set; }
+        public DateTime LastSeenUtc { get; set; }
+        public IEnumerable<string> Roles { get; set; } = Enumerable.Empty<string>();
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Monitoring\ClusterMonitor.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
+using Clustron.Core.Client;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Monitoring
+{
+    public class ClusterMonitor : IMonitor
+    {
+        private readonly ClustronClientCore _core;
+
+        public ClusterMonitor(ClustronClientCore core)
+        {  
+            _core = core; 
+        }
+
+        public NodeHealthStatus GetLocalHealth()
+        {
+            throw new NotImplementedException();
+        }
+
+        public ClusterMetrics GetMetrics()
+        {
+            throw new NotImplementedException();
+        }
+
+        public IEnumerable<NodeHealthStatus> GetPeerHealth()
+        {
+            throw new NotImplementedException();
+        }
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\Monitoring\IMonitor.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Client.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Client.Monitoring
+{
+    public interface IMonitor
+    {
+        NodeHealthStatus GetLocalHealth();
+        IEnumerable<NodeHealthStatus> GetPeerHealth();
+        ClusterMetrics GetMetrics();
+    }
+}
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+// <autogenerated />
+using System;
+using System.Reflection;
+[assembly: global::System.Runtime.Versioning.TargetFrameworkAttribute(".NETCoreApp,Version=v9.0", FrameworkDisplayName = ".NET 9.0")]
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\obj\Debug\net9.0\Clustron.Client.AssemblyInfo.cs
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("Clustron.Client")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2ae416f9d5e65eddb189fd5398116654dff5631a")]
+[assembly: System.Reflection.AssemblyProductAttribute("Clustron.Client")]
+[assembly: System.Reflection.AssemblyTitleAttribute("Clustron.Client")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Client\obj\Debug\net9.0\Clustron.Client.GlobalUsings.g.cs
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.IO;
+global using global::System.Linq;
+global using global::System.Net.Http;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+

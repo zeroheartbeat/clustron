@@ -18,13 +18,25 @@ namespace Clustron.Core.Serialization
 {
     public class JsonMessageSerializer : IMessageSerializer
     {
-        private readonly JsonSerializerOptions _options = new(JsonSerializerDefaults.Web);
-
+        private readonly JsonSerializerOptions _options = new(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = true
+        };
         public byte[] Serialize<T>(T obj) =>
             JsonSerializer.SerializeToUtf8Bytes(obj, _options);
 
+        public byte[] Serialize(Type type, object value) =>
+    JsonSerializer.SerializeToUtf8Bytes(value, type, _options);
+
         public T Deserialize<T>(byte[] data) =>
             JsonSerializer.Deserialize<T>(data, _options)!;
+
+        //public T Deserialize<T>(byte[] data)
+        //{
+        //    var json = Encoding.UTF8.GetString(data);
+        //    Console.WriteLine("[Deserialize<T>] " + json); // Debug only
+        //    return JsonSerializer.Deserialize<T>(data, _options)!;
+        //}
 
         public object Deserialize(byte[] data, Type type) =>
             JsonSerializer.Deserialize(data, type)!;

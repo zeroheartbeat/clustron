@@ -6,6 +6,8 @@
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using Clustron.Core.Cluster;
+using Clustron.Core.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,6 +23,10 @@ namespace Clustron.Core.Events
         Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null);
         void Subscribe<T>(Action<T> handler) where T : IClusterEvent;
         void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent;
+
+        Task PublishFromNetworkAsync(byte[] payload, string eventType);
+
+        void Configure(IClusterCommunication communication, NodeInfo self);
     }
 }
 

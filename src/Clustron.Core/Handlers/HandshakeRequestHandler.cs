@@ -60,13 +60,7 @@ public class HandshakeRequestHandler : IMessageHandler
             ResponderNode = _self 
         };
 
-        var responseMessage = new Message
-        {
-            MessageType = MessageTypes.HandshakeResponse,
-            SenderId = _self.NodeId,
-            CorrelationId = message.CorrelationId,
-            Payload = _serializer.Serialize(response)
-        };
+        var responseMessage = MessageBuilder.Create<HandshakeResponse>(_self.NodeId, MessageTypes.HandshakeResponse, message.CorrelationId, response);
 
         await _communication.Transport.SendAsync(request.Sender, responseMessage);
 

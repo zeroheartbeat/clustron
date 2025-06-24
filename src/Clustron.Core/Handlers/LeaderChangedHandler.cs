@@ -8,6 +8,7 @@
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Events;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Serialization;
@@ -34,15 +35,15 @@ namespace Clustron.Core.Handlers
 
         public async Task HandleAsync(Message message)
         {
-            var payload = _serializer.Deserialize<LeaderChangedPayload>(message.Payload);
+            var payload = _serializer.Deserialize<LeaderChangedEvent>(message.Payload);
 
-            if (payload?.Leader == null || string.IsNullOrWhiteSpace(payload.Leader.NodeId))
+            if (payload?.NewLeader == null || string.IsNullOrWhiteSpace(payload.NewLeader.NodeId))
             {
-                _logger.LogCritical("Received LeaderChanged with null leader — ignoring.");
+                _logger.LogCritical($"Received LeaderChanged with null leader from {message.SenderId} — ignoring.");
                 return;
             }
 
-            var incomingLeader = payload.Leader;
+            var incomingLeader = payload.NewLeader;
             var incomingEpoch = payload.Epoch;
             var currentLeader = _clusterLeader.CurrentLeader;
             var currentEpoch = _clusterLeader.CurrentEpoch;

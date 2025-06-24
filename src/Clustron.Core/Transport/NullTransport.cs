@@ -33,7 +33,7 @@ public class NullTransport : ITransport
         return Task.FromResult<Message>(null!); // Will crash if called — placeholder only
     }
 
-    public Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null)
+    public Task BroadcastAsync(Message message, params string[] roles)
     {
         return Task.CompletedTask;
     }

@@ -14,8 +14,9 @@
     using Clustron.Core.Models;
     using Clustron.Core.Transport;
     using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 
-    namespace Clustron.Core.Cluster;
+namespace Clustron.Core.Cluster;
 
     public class JoinManager
     {

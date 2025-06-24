@@ -10,6 +10,7 @@ using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Cluster.State;
 using Clustron.Core.Discovery;
+using Clustron.Core.Events;
 using Clustron.Core.Handlers;
 using Clustron.Core.Handshake;
 using Clustron.Core.Messaging;
@@ -60,13 +61,7 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
                 Sender = _self
             };
 
-            var message = new Message
-            {
-                MessageType = MessageTypes.HandshakeRequest,
-                SenderId = _self.NodeId,
-                CorrelationId = Guid.NewGuid().ToString(),
-                Payload = _serializer.Serialize(request)
-            };
+            var message = MessageBuilder.Create<HandshakeRequest>(_self.NodeId, MessageTypes.HandshakeRequest, request);
 
             await _communication.Transport.SendAsync(targetNode, message);
 
@@ -114,16 +109,12 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
             _logger.LogInformation("Registering discovered peer: {NodeId}", request.Sender.NodeId);
             await updater.RegisterPeerAsync(request.Sender);
 
-            _logger.LogInformation("Locally triggering node join handler for {NodeId}", request.Sender.NodeId);
+            //_logger.LogInformation("Locally triggering node join handler for {NodeId}", request.Sender.NodeId);
 
-            var joinMessage = new Message
-            {
-                MessageType = MessageTypes.NodeJoined,
-                SenderId = _self.NodeId,
-                Payload = _serializer.Serialize(request.Sender)
-            };
+            //var nodeJoinEvent = new NodeJoinedEvent(request.Sender);
+            //var joinMessage = MessageBuilder.Create<NodeJoinedEvent>(_self.NodeId, MessageTypes.NodeJoined, nodeJoinEvent);
 
-            await _nodeJoinedHandler.HandleAsync(joinMessage);
+            //await _nodeJoinedHandler.HandleAsync(joinMessage);
         }
 
 

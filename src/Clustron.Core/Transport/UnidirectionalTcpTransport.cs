@@ -136,17 +136,29 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
         }
     }
 
-    public override Task HandlePeerDownAsync(string nodeId)
+    public override async Task HandlePeerDownAsync(string nodeId)
     {
         var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
-        if (node != null)
+        if (node == null)
         {
-            _peerManager.MarkPeerDown(node);
+            _logger.LogWarning("HandlePeerDownAsync: node {NodeId} not found in known peers.", nodeId);
+            return;
         }
 
-        RemoveConnection(nodeId);
-        return Task.CompletedTask;
+        // Run vetting logic via centralized manager
+        bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+        {
+            bool reachable = await CanReachNodeAsync(p);
+            _logger.LogDebug("Peer {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+            return !reachable;
+        });
+
+        if (removed)
+        {
+            RemoveConnection(nodeId);
+        }
     }
+
 
     public override async Task SendAsync(NodeInfo target, Message message)
     {

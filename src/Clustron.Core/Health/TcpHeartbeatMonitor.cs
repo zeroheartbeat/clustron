@@ -1,25 +1,13 @@
-﻿// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
-
-using Clustron.Abstractions;
+﻿using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Events;
+using Clustron.Core.Health;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Observability;
 using Clustron.Core.Serialization;
 using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
-using System.Net.Sockets;
-using System.Threading;
-using System.Xml.Linq;
-
-namespace Clustron.Core.Health;
 
 public class TcpHeartbeatMonitor : IHeartbeatMonitor
 {
@@ -38,8 +26,8 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
 
     public event Func<NodeInfo, Task>? OnNodeFailed;
 
-    public TcpHeartbeatMonitor(IClusterRuntime clusterRuntime, IMessageSerializer serializer, IMetricContributor metrics, 
-                            IClusterLoggerProvider loggerProvider)
+    public TcpHeartbeatMonitor(IClusterRuntime clusterRuntime, IMessageSerializer serializer, IMetricContributor metrics,
+                                IClusterLoggerProvider loggerProvider)
     {
         _logger = loggerProvider.GetLogger<TcpHeartbeatMonitor>();
         _serializer = serializer;
@@ -52,7 +40,6 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
         _clusterLeader = controller;
         _transport = transport.Value;
     }
-
 
     public Task StartAsync(NodeInfo self, IEnumerable<NodeInfo> peers)
     {
@@ -76,7 +63,14 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
 
     public async Task RemovePeer(NodeInfo peer)
     {
-        _peerManager.MarkPeerDown(peer);
+        _logger.LogWarning("Attempting to remove peer {NodeId} from monitor", peer.NodeId);
+
+        await _peerManager.TryRemovePeerAsync(peer, async p =>
+        {
+            bool unreachable = !(await _transport.CanReachNodeAsync(p));
+            _logger.LogDebug("Peer {NodeId} reachability check: {Reachable}", p.NodeId, !unreachable);
+            return unreachable;
+        });
 
         _transport.RemoveConnection(peer.NodeId);
 
@@ -84,15 +78,11 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
             await OnNodeFailed.Invoke(peer);
     }
 
-
     public async Task MarkNodeLeft(NodeInfo node)
     {
-        _logger.LogWarning("Removing node from heartbeat tracking: {NodeId}", node.NodeId);
+        _logger.LogWarning("Removing node from heartbeat tracking (external event): {NodeId}", node.NodeId);
         await RemovePeer(node);
-        _peerManager.MarkPeerDown(node);
     }
-
-    //public bool IsAlive(string nodeId) => _peerRegistry.IsAlive(nodeId);
 
     public void MarkHeartbeatReceived(string nodeId)
     {
@@ -145,25 +135,21 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
                 {
                     _peerManager.RecordMissedHeartbeat(peer.NodeId);
 
-                    if (_peerManager.GetMissCount(peer.NodeId) == 1)
+                    if (missCount == 1)
                     {
                         _logger.LogWarning("Suspecting node {NodeId} due to missed heartbeat.", peer.NodeId);
 
                         if (_clusterLeader.Value.CurrentLeader != null)
                         {
-                            var msg = new Message
-                            {
-                                MessageType = MessageTypes.HeartbeatSuspect,
-                                SenderId = _self.NodeId,
-                                Payload = _serializer.Serialize(peer.NodeId)
-                            };
+                            var hbsuspect = new HeartbeatSuspect(peer);
+                            var msg = MessageBuilder.Create<HeartbeatSuspect>(_self.NodeId, MessageTypes.HeartbeatSuspect, hbsuspect);
                             _ = _transport.SendAsync(_clusterLeader.Value.CurrentLeader, msg);
                         }
                     }
 
                     if (_peerManager.HasTimedOut(peer.NodeId, _timeout) && _peerManager.IsAlive(peer.NodeId))
                     {
-                        _logger.LogWarning("Node failed: {NodeId}", peer.NodeId);
+                        _logger.LogWarning("Node failed after timeout: {NodeId}", peer.NodeId);
                         await RemovePeer(peer);
                         await _transport.HandlePeerDownAsync(peer.NodeId);
                     }
@@ -181,15 +167,14 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
         }
     }
 
-
     private async Task<bool> SendHeartbeatAsync(NodeInfo node)
     {
         try
         {
-            var heartbeatPayload = new HeartbeatPayload 
-            { 
-                LeaderId = _clusterLeader.Value.CurrentLeader.NodeId, 
-                LeaderEpoch = _clusterLeader.Value.CurrentEpoch 
+            var heartbeatPayload = new HeartbeatPayload
+            {
+                LeaderId = _clusterLeader.Value.CurrentLeader.NodeId,
+                LeaderEpoch = _clusterLeader.Value.CurrentEpoch
             };
 
             var correlationId = Guid.NewGuid().ToString();
@@ -206,6 +191,4 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
             return false;
         }
     }
-
 }
-

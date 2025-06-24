@@ -20,7 +20,14 @@ public class Message
     public string SenderId { get; set; } = string.Empty;
     public string? CorrelationId { get; set; }
 
+    public string TypeInfo { get; set; } = default!;
+
     public byte[] Payload { get; set; } = Array.Empty<byte>();
+
+    public override string ToString()
+    {
+        return $"Message [Type={MessageType}, SenderId={SenderId}, CorrelationId={CorrelationId}, TypeInfo={TypeInfo}, PayloadSize={Payload?.Length ?? 0} bytes]";
+    }
 }
 
 

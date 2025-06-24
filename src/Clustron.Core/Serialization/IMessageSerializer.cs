@@ -10,6 +10,7 @@ namespace Clustron.Core.Serialization;
 public interface IMessageSerializer
 {
     byte[] Serialize<T>(T obj);
+    byte[] Serialize(Type type, object value);
     T Deserialize<T>(byte[] data);
 
     object Deserialize(byte[] data, Type type);

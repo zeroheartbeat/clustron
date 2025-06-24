@@ -57,14 +57,7 @@ public class ClusterViewBroadcaster
                     .ToList();
 
                 var payload = new ClusterViewPayload { KnownPeers = knownPeers };
-
-                var message = new Message
-                {
-                    MessageType = MessageTypes.ClusterView,
-                    SenderId = _runtime.Self.NodeId,
-                    CorrelationId = Guid.NewGuid().ToString(),
-                    Payload = _serializer.Serialize(payload)
-                };
+                var message = MessageBuilder.Create<ClusterViewPayload>(_runtime.Self.NodeId, MessageTypes.ClusterView, payload);
 
                 foreach (var peer in knownPeers)
                 {

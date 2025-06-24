@@ -19,7 +19,8 @@ namespace Clustron.Core.Messaging
         public const string HeartbeatSuspect = "clustron.heartbeat.suspect";
         public const string ClustronMetrics = "clustron.metrics"; 
         public const string RequestMetrics = "clustron.metrics.request";
-        public const string ClusterView = "ClusterView";
+        public const string ClusterView = "clustron.cluster.view";
+        public const string CustomEvent = "clustron.custom.event";
     }
 }
 
