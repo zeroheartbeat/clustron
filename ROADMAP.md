@@ -96,6 +96,6 @@
 
 We welcome contributors, feedback, and early adopters.
 
-- Join [Clustron Discord](https://discord.gg/your-link)
-- Report issues or request features on [GitHub Issues](https://github.com/your-org/clustron/issues)
+- Email at support@clustron.io to request features.
+- Report issues or request features on [GitHub Issues](https://github.com/zeroheartbeat/clustron/issues)
 - ⭐ Star the project to show support
