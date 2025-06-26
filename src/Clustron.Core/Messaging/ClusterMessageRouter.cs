@@ -67,7 +67,6 @@ public class ClusterMessageRouter : IMessageRouter
         {
             try
             {
-                _metrics.Increment(MetricKeys.Messages.Received);
                 await handler.HandleAsync(message);
             }
             catch (Exception ex)

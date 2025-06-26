@@ -54,7 +54,7 @@ public static class InternalServiceRegistration
         services.AddSingleton(self);
         services.AddSingleton(loggerFactory);
 
-        var serializer = new JsonMessageSerializer();
+        var serializer = new MessagePackSerializerAdapter();
         MessageBuilder.Configure(serializer);
 
         IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>(), serializer);
@@ -62,7 +62,7 @@ public static class InternalServiceRegistration
 
         var discoveryProvider = new AdaptiveDiscoveryProvider(config.StaticNodes ?? []);
         var nullTransport = new NullTransport();
-        var peerRegistry = new PeerRegistry(self);
+        var peerRegistry = new PeerRegistry(self, discoveryProvider);
         var peerManager = new ClusterPeerManager(peerRegistry, eventBus, loggerFactory.CreateLogger<ClusterPeerManager>());
 
 

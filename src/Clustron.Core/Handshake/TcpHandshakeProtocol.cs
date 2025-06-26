@@ -41,6 +41,7 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
         NodeJoinedHandler nodeJoinedHandler,
         IClusterLoggerProvider loggerProvider)
     {
+        _runtime = clusterRuntime;
         _self = clusterRuntime.Self;
         _communication = communication;
         _discoveryProvider = discovery.DiscoveryProvider;
@@ -104,19 +105,8 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
         var accepted = request.ClusterId == _self.ClusterId && request.Version == _self.Version;
         var reason = accepted ? "Accepted" : "Cluster/Version mismatch";
 
-        if (accepted && _discoveryProvider is IRuntimeUpdatableDiscovery updater)
-        {
-            _logger.LogInformation("Registering discovered peer: {NodeId}", request.Sender.NodeId);
-            await updater.RegisterPeerAsync(request.Sender);
-
-            //_logger.LogInformation("Locally triggering node join handler for {NodeId}", request.Sender.NodeId);
-
-            //var nodeJoinEvent = new NodeJoinedEvent(request.Sender);
-            //var joinMessage = MessageBuilder.Create<NodeJoinedEvent>(_self.NodeId, MessageTypes.NodeJoined, nodeJoinEvent);
-
-            //await _nodeJoinedHandler.HandleAsync(joinMessage);
-        }
-
+        if(accepted)
+            _runtime.PeerManager.RegisterPeer(request.Sender);
 
         return new HandshakeResponse
         {

@@ -6,6 +6,7 @@
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using Clustron.Core.Discovery;
 using Clustron.Core.Events;
 using Clustron.Core.Extensions;
 using Clustron.Core.Models;
@@ -16,15 +17,17 @@ namespace Clustron.Core.Cluster;
 public class PeerRegistry
 {
     private readonly NodeInfo _self;
+    private readonly IDiscoveryProvider _discoveryProvider;
     private readonly ConcurrentDictionary<string, NodeInfo> _knownPeers = new();
     private readonly ConcurrentDictionary<string, NodeInfo> _activePeers = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastSeen = new();
     private readonly ConcurrentDictionary<string, int> _missCounts = new();
 
     public NodeInfo Self => _self;
-    public PeerRegistry(NodeInfo self)
+    public PeerRegistry(NodeInfo self, IDiscoveryProvider discoveryProvider)
     {
         _self = self;   
+        _discoveryProvider = discoveryProvider;
     }
 
     public IEnumerable<NodeInfo> GetActivePeers()
@@ -51,6 +54,9 @@ public class PeerRegistry
         _activePeers[peer.NodeId] = peer;
         _lastSeen[peer.NodeId] = DateTime.UtcNow;
         _missCounts[peer.NodeId] = 0;
+
+        if(_discoveryProvider is IRuntimeUpdatableDiscovery updater)
+            updater.RegisterPeerAsync(peer);
 
         return isNew;
     }

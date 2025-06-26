@@ -16,6 +16,7 @@ using Clustron.Core.Handlers;
 using Clustron.Core.Hosting;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
+using Clustron.Core.Observability;
 using Clustron.Core.Serialization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -121,8 +122,9 @@ public class ClustronClientBuilder
         var config = _config ?? resolved.GetRequiredService<ClustronConfig>();
         var controller = resolved.GetRequiredService<ClusterNodeControllerBase>();
         var serializer = resolved.GetRequiredService<IMessageSerializer>();
+        var metricsContributor = resolved.GetRequiredService<IMetricContributor>();
 
-        var clientCore = new ClustronClientCore(controller, serializer);
+        var clientCore = new ClustronClientCore(controller, metricsContributor, serializer);
         var client = new ClustronClient(clientCore);
 
         var handler = new ClientMessageHandler(

@@ -1,4 +1,11 @@
-﻿using Clustron.Abstractions;
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
 using Clustron.Core.Helpers;
@@ -8,9 +15,11 @@ using Clustron.Core.Serialization;
 using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace Clustron.Core.Events
@@ -25,12 +34,21 @@ namespace Clustron.Core.Events
         private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _asyncHandlers = new();
         private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
 
+        private readonly Channel<IClusterEvent> _localEventQueue =
+            Channel.CreateBounded<IClusterEvent>(new BoundedChannelOptions(10000)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            });
+
         public AsyncClusterEventBus(
             ILogger<AsyncClusterEventBus> logger,
             IMessageSerializer serializer)
         {
             _logger = logger;
             _serializer = serializer;
+            _ = Task.Run(ProcessEventQueueAsync);
         }
 
         public void Configure(IClusterCommunication communication, NodeInfo self)
@@ -60,23 +78,6 @@ namespace Clustron.Core.Events
 
             _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
                     _serializer.Deserialize<T>(payload)!);
-
-            //_deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
-            //{
-            //    var json = System.Text.Encoding.UTF8.GetString(payload);
-            //    Console.WriteLine($"[DEBUG] Deserializing event: {typeof(T).FullName}");
-            //    Console.WriteLine($"[DEBUG] Raw JSON:\n{json}");
-
-            //    var result = _serializer.Deserialize<T>(payload)!;
-
-            //    var payloadProp = typeof(T).GetProperty("Payload");
-            //    var payloadValue = payloadProp?.GetValue(result);
-            //    Console.WriteLine($"[DEBUG] Payload is {(payloadValue == null ? "NULL ❌" : "OK ✅")}");
-
-            //    return result;
-            //});
-
-
         }
 
         private void AddHandler(Type type, Func<IClusterEvent, Task> handler)
@@ -99,27 +100,22 @@ namespace Clustron.Core.Events
             options ??= new EventDispatchOptions();
             var type = evt.GetType();
 
-            var isFromNetwork = options.Scope == DeliveryScope.LocalOnly;
-
-            // Cluster broadcast if requested
             if (options.Scope == DeliveryScope.ClusterWide)
             {
                 await BroadcastEventAsync(evt, type);
             }
 
-            // Only dispatch locally if:
-            // - It's local-only
-            // - OR it's the original publish (not re-broadcast from network)
             if (!_asyncHandlers.TryGetValue(type, out var handlers))
                 return;
 
+            if (options.Scope == DeliveryScope.LocalOnly && options.Policy == DispatchPolicy.FireAndForget)
+            {
+                await _localEventQueue.Writer.WriteAsync(evt);
+                return;
+            }
+
             switch (options.Policy)
             {
-                case DispatchPolicy.FireAndForget:
-                    foreach (var handler in handlers.ToArray())
-                        _ = Task.Run(() => handler(evt));
-                    break;
-
                 case DispatchPolicy.Parallel:
                     await Task.WhenAll(handlers.ToArray().Select(h => h(evt)));
                     break;
@@ -142,12 +138,9 @@ namespace Clustron.Core.Events
             }
         }
 
-
-
         public void Publish(IClusterEvent evt) =>
             PublishAsync(evt).GetAwaiter().GetResult();
 
-        
         public Task PublishFromNetworkAsync(byte[] payload, string eventType)
         {
             if (_deserializers.TryGetValue(eventType, out var factory))
@@ -164,14 +157,37 @@ namespace Clustron.Core.Events
             var message = MessageBuilder.Create(
                 _self.NodeId,
                 evt.EventType,
-                type.AssemblyQualifiedName!, // full type info
-                evt); // send event directly
+                type.AssemblyQualifiedName!,
+                evt);
 
             var targetRoles = evt.EventType == MessageTypes.CustomEvent
                 ? new[] { ClustronRoles.Member }
                 : Array.Empty<string>();
 
             await _communication.Transport.BroadcastAsync(message, targetRoles);
+        }
+
+        private async Task ProcessEventQueueAsync()
+        {
+            await foreach (var evt in _localEventQueue.Reader.ReadAllAsync())
+            {
+                var type = evt.GetType();
+
+                if (_asyncHandlers.TryGetValue(type, out var handlers))
+                {
+                    foreach (var handler in handlers.ToArray())
+                    {
+                        try
+                        {
+                            await handler(evt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Event handler failed for {Type}", type.Name);
+                        }
+                    }
+                }
+            }
         }
     }
 }

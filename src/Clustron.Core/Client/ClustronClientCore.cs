@@ -16,6 +16,7 @@ using Clustron.Core.Events;
 using System.Collections.Concurrent;
 using Clustron.Core.Configuration;
 using Clustron.Abstractions;
+using Clustron.Core.Observability;
 
 namespace Clustron.Core.Client;
 
@@ -25,6 +26,7 @@ public class ClustronClientCore
     private readonly NodeInfo _self;
     private readonly ClusterPeerManager _peerManager;
     private readonly IClusterEventBus _eventBus;
+    private readonly IMetricContributor _metrics;
     private readonly ClusterNodeControllerBase _controller;
 
     private readonly ConcurrentDictionary<string, Func<object, Task>> _handlers = new();
@@ -33,13 +35,14 @@ public class ClustronClientCore
     public event Action<NodeInfo>? NodeLeft;
     public event Action<NodeInfo, int>? LeaderChanged;
 
-    public ClustronClientCore(ClusterNodeControllerBase controller, IMessageSerializer serializer)
+    public ClustronClientCore(ClusterNodeControllerBase controller, IMetricContributor metrics, IMessageSerializer serializer)
     {
         _controller = controller;
         _serializer = serializer;
         _self = controller.Runtime.Self;
         _peerManager = controller.Runtime.PeerManager;
         _eventBus = controller.Runtime.EventBus;
+        _metrics = metrics;
         
         _eventBus.Subscribe<NodeJoinedEvent>(e => NodeJoined?.Invoke(e.Node));
         _eventBus.Subscribe<NodeLeftEvent>(e => NodeLeft?.Invoke(e.Node));
@@ -49,25 +52,41 @@ public class ClustronClientCore
     public IMessageSerializer Serializer => _serializer;
     public NodeInfo Self => _self;
 
-    public Task SendAsync(Message message, string targetNodeId)
+    public async Task SendAsync(Message message, string targetNodeId)
     {
-        return _controller.Communication.Transport.SendAsync(_peerManager.GetPeerById(targetNodeId), message);
+        await _controller.Communication.Transport.SendAsync(
+            _peerManager.GetPeerById(targetNodeId), message);
+
+        _metrics.Increment(MetricKeys.Msg.Direct.Sent);
     }
 
-    public Task BroadcastAsync(Message message, params string[] roles)
+    public async Task BroadcastAsync(Message message, params string[] roles)
     {
-        return _controller.Communication.Transport.BroadcastAsync(message, roles);
+        var recipients = _peerManager.GetActivePeers()
+            .Where(p => roles.Length == 0 || p.Roles?.Intersect(roles, StringComparer.OrdinalIgnoreCase).Any() == true)
+            .ToList();
+
+        await _controller.Communication.Transport.BroadcastAsync(message, roles);
+
+        _metrics.Increment(MetricKeys.Msg.Direct.Broadcasted);
     }
 
-    public Task PublishAsync<T>(T @event, EventDispatchOptions? options) where T : IClusterEvent
+    public async Task PublishAsync<T>(T @event, EventDispatchOptions? options) where T : IClusterEvent
     {
-        
-        return _eventBus.PublishAsync(@event, options);
+        await _eventBus.PublishAsync(@event, options);
+
+        _metrics.Increment(MetricKeys.Msg.Events.Published);
     }
 
     public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
     {
-        _eventBus.Subscribe(handler);
+        _eventBus.Subscribe<T>(async evt =>
+        {
+            await handler(evt);
+
+            // Track total delivered messages
+            _metrics.Increment(MetricKeys.Msg.Events.Delivered);
+        });
     }
 
     public IEnumerable<NodeInfo> GetMembers() => _peerManager.GetPeersWithRole(ClustronRoles.Member);

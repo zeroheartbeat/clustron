@@ -138,6 +138,7 @@ using Clustron.Core.Events;
 using System.Collections.Concurrent;
 using Clustron.Core.Configuration;
 using Clustron.Abstractions;
+using Clustron.Core.Observability;
 
 namespace Clustron.Core.Client;
 
@@ -147,6 +148,7 @@ public class ClustronClientCore
     private readonly NodeInfo _self;
     private readonly ClusterPeerManager _peerManager;
     private readonly IClusterEventBus _eventBus;
+    private readonly IMetricContributor _metrics;
     private readonly ClusterNodeControllerBase _controller;
 
     private readonly ConcurrentDictionary<string, Func<object, Task>> _handlers = new();
@@ -155,13 +157,14 @@ public class ClustronClientCore
     public event Action<NodeInfo>? NodeLeft;
     public event Action<NodeInfo, int>? LeaderChanged;
 
-    public ClustronClientCore(ClusterNodeControllerBase controller, IMessageSerializer serializer)
+    public ClustronClientCore(ClusterNodeControllerBase controller, IMetricContributor metrics, IMessageSerializer serializer)
     {
         _controller = controller;
         _serializer = serializer;
         _self = controller.Runtime.Self;
         _peerManager = controller.Runtime.PeerManager;
         _eventBus = controller.Runtime.EventBus;
+        _metrics = metrics;
         
         _eventBus.Subscribe<NodeJoinedEvent>(e => NodeJoined?.Invoke(e.Node));
         _eventBus.Subscribe<NodeLeftEvent>(e => NodeLeft?.Invoke(e.Node));
@@ -171,25 +174,41 @@ public class ClustronClientCore
     public IMessageSerializer Serializer => _serializer;
     public NodeInfo Self => _self;
 
-    public Task SendAsync(Message message, string targetNodeId)
+    public async Task SendAsync(Message message, string targetNodeId)
     {
-        return _controller.Communication.Transport.SendAsync(_peerManager.GetPeerById(targetNodeId), message);
+        await _controller.Communication.Transport.SendAsync(
+            _peerManager.GetPeerById(targetNodeId), message);
+
+        _metrics.Increment(MetricKeys.Msg.Direct.Sent);
     }
 
-    public Task BroadcastAsync(Message message)
+    public async Task BroadcastAsync(Message message, params string[] roles)
     {
-        return _controller.Communication.Transport.BroadcastAsync(message, GetPeersExceptRole(ClustronRoles.Member));
+        var recipients = _peerManager.GetActivePeers()
+            .Where(p => roles.Length == 0 || p.Roles?.Intersect(roles, StringComparer.OrdinalIgnoreCase).Any() == true)
+            .ToList();
+
+        await _controller.Communication.Transport.BroadcastAsync(message, roles);
+
+        _metrics.Increment(MetricKeys.Msg.Direct.Broadcasted);
     }
 
-    public Task PublishAsync<T>(T @event, EventDispatchOptions? options) where T : IClusterEvent
+    public async Task PublishAsync<T>(T @event, EventDispatchOptions? options) where T : IClusterEvent
     {
-        
-        return _eventBus.PublishAsync(@event, options);
+        await _eventBus.PublishAsync(@event, options);
+
+        _metrics.Increment(MetricKeys.Msg.Events.Published);
     }
 
     public void Subscribe<T>(Func<T, Task> handler) where T : IClusterEvent
     {
-        _eventBus.Subscribe(handler);
+        _eventBus.Subscribe<T>(async evt =>
+        {
+            await handler(evt);
+
+            // Track total delivered messages
+            _metrics.Increment(MetricKeys.Msg.Events.Delivered);
+        });
     }
 
     public IEnumerable<NodeInfo> GetMembers() => _peerManager.GetPeersWithRole(ClustronRoles.Member);
@@ -287,170 +306,103 @@ namespace Clustron.Core.Cluster
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Cluster\ClusterNodeControllerBase.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
-
+using Clustron.Core.Cluster;
 using Clustron.Core.Cluster.State;
-using Clustron.Core.Events;
-using Clustron.Core.Lifecycle;
 using Clustron.Core.Models;
-using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace Clustron.Core.Cluster
+public abstract class ClusterNodeControllerBase : IClusterNodeController, IClusterStateMutator
 {
-    public abstract class ClusterNodeControllerBase : IClusterNodeController, IClusterStateMutator
+    protected readonly NodeInfo Self;
+    protected readonly JoinManager JoinManager;
+    protected readonly ILogger Logger;
+    protected readonly ClusterPeerManager PeerManager;
+    protected readonly IClusterCommunication ClusterCommunication;
+    protected readonly IClusterRuntime ClusterRuntime;
+
+    public virtual NodeInfo? CurrentLeader => PeerManager.GetLeader();
+    public virtual int CurrentEpoch => PeerManager.GetCurrentEpoch();
+
+    public IClusterCommunication Communication => ClusterCommunication;
+    public IClusterRuntime Runtime => ClusterRuntime;
+
+    protected ClusterNodeControllerBase(
+        IClusterRuntime clusterRuntime,
+        IClusterCommunication clusterCommunication,
+        JoinManager joinManager,
+        ILogger logger)
     {
-        protected readonly NodeInfo Self;
-        protected readonly JoinManager JoinManager;
-        protected readonly ILogger Logger;
-        protected readonly ClusterPeerManager PeerManager;
-        protected readonly IClusterCommunication ClusterCommunication;
-        protected readonly IClusterRuntime ClusterRuntime;
+        JoinManager = joinManager;
+        PeerManager = clusterRuntime.PeerManager;
+        Logger = logger;
+        ClusterRuntime = clusterRuntime;
 
+        Self = clusterRuntime.Self;
+        ClusterCommunication = clusterCommunication;
+    }
 
-        protected NodeInfo? _currentLeader;
-        protected int _currentEpoch = 0;
+    public abstract Task StartAsync();
 
-        public virtual NodeInfo? CurrentLeader => _currentLeader;
-        public IClusterCommunication Communication => ClusterCommunication;
-        public IClusterRuntime Runtime => ClusterRuntime;
-        public virtual int CurrentEpoch => _currentEpoch;
+    public virtual async Task<bool> IsReachableAsync()
+    {
+        var leader = CurrentLeader;
+        if (leader == null)
+            return false;
 
-        protected ClusterNodeControllerBase(
-            IClusterRuntime clusterRuntime,
-            IClusterCommunication clusterCommunication,
-            JoinManager joinManager,
-            ILogger logger)
+        return await ClusterCommunication.Transport.CanReachNodeAsync(leader);
+    }
+
+    public bool IsSelfLeader() => CurrentLeader?.NodeId == Self.NodeId;
+
+    public void SetLeader(NodeInfo leader, int epoch)
+    {
+        Logger.LogInformation("SetLeader called for {LeaderId} with epoch {Epoch}", leader?.NodeId ?? "<null>", epoch);
+        bool success = PeerManager.TrySetLeader(leader, epoch);
+
+        if (!success)
         {
-            JoinManager = joinManager;
-            PeerManager = clusterRuntime.PeerManager;
-            Logger = logger;
-            ClusterRuntime = clusterRuntime;
+            Logger.LogDebug("Leader not updated: rejected by ClusterPeerManager.");
+        }
+    }
 
-            Self = clusterRuntime.Self;
-            ClusterCommunication = clusterCommunication;
+    public void ForceLeader(NodeInfo leader, int epoch)
+    {
+        if (leader == null || string.IsNullOrWhiteSpace(leader.NodeId))
+        {
+            Logger.LogWarning("ForceLeader called with invalid leader.");
+            return;
         }
 
-        public abstract Task StartAsync();
+        Logger.LogWarning("Forcing leader to {LeaderId} at epoch {Epoch}", leader.NodeId, epoch);
+        PeerManager.TrySetLeader(leader, epoch);
+    }
 
-        public virtual async Task<bool> IsReachableAsync()
+    public async Task HandleHeartbeatSuspectAsync(string suspectedNodeId, string reporterId)
+    {
+        Logger.LogWarning("Node {NodeId} suspected by {ReporterId}", suspectedNodeId, reporterId);
+        if (!IsSelfLeader()) return;
+
+        if (!PeerManager.IsAlive(suspectedNodeId)) return;
+
+        var suspect = PeerManager.GetPeerById(suspectedNodeId);
+        bool reachable = await Communication.Transport.CanReachNodeAsync(suspect);
+
+        if (!reachable)
         {
-            if (_currentLeader == null)
-                return false;
-
-            return await ClusterCommunication.Transport.CanReachNodeAsync(_currentLeader);
-        }
-
-        public bool IsSelfLeader() => _currentLeader?.NodeId == Self.NodeId;
-
-        public void SetLeader(NodeInfo leader, int epoch)
-        {
-            if (leader == null || string.IsNullOrWhiteSpace(leader.NodeId))
-            {
-                Logger.LogWarning("SetLeader called with null or invalid leader.");
-                return;
-            }
-
-            if (CurrentLeader?.NodeId == leader.NodeId)
-            {
-                if (epoch < _currentEpoch)
-                {
-                    Logger.LogWarning("Received leader update for same leader {LeaderId} with lower epoch {Epoch} < {CurrentEpoch}", leader.NodeId, epoch, CurrentEpoch);
-                    return;
-                }
-
-                if (epoch == _currentEpoch)
-                {
-                    return; // Already current
-                }
-
-                Logger.LogInformation("Updating epoch for existing leader {LeaderId} from {OldEpoch} to {NewEpoch}", leader.NodeId, CurrentEpoch, epoch);
-                _currentEpoch = epoch;
-                return;
-            }
-
-            if (epoch < _currentEpoch)
-            {
-                Logger.LogWarning("Ignoring stale SetLeader call from {LeaderId} with epoch {Epoch} < {CurrentEpoch}", leader.NodeId, epoch, CurrentEpoch);
-                return;
-            }
-
-            var previous = CurrentLeader?.NodeId ?? "<none>";
-            Logger.LogCritical("Changing leader from {OldLeader} to {NewLeader} with epoch {Epoch}", previous, leader.NodeId, epoch);
-
-            _currentLeader = leader;
-            _currentEpoch = epoch;
-
-            // Publish LeaderChangedEvent
-            ClusterRuntime.EventBus.Publish(new LeaderChangedEvent(leader, epoch));
-        }
-
-        public async Task HandleHeartbeatSuspectAsync(string suspectedNodeId, string reporterId)
-        {
-            Logger.LogWarning("Node {NodeId} suspected by {ReporterId}", suspectedNodeId, reporterId);
-            if (!IsSelfLeader()) return;
-
-            PeerManager.MarkPeerDown(new NodeInfo { NodeId = suspectedNodeId });
-        }
-
-        public void ForceLeader(NodeInfo leader, int epoch)
-        {
-            if (leader == null || string.IsNullOrWhiteSpace(leader.NodeId))
-            {
-                Logger.LogWarning("ForceLeader called with invalid leader.");
-                return;
-            }
-
-            if (epoch < CurrentEpoch)
-            {
-                Logger.LogWarning("ForceLeader rejected: Epoch {Epoch} is older than current {CurrentEpoch}", epoch, CurrentEpoch);
-                return;
-            }
-
-            if (leader.NodeId == Self.NodeId)
-            {
-                Logger.LogInformation("ForceLeader to self with epoch {Epoch}", epoch);
-            }
-            else if (CurrentLeader?.NodeId != leader.NodeId)
-            {
-                Logger.LogWarning("Forcefully switching leader from {OldLeader} to {NewLeader} at epoch {Epoch}",
-                    CurrentLeader?.NodeId ?? "<none>", leader.NodeId, epoch);
-            }
-
-            SetLeader(leader, epoch);
+            Logger.LogInformation("Confirmed unreachable: {NodeId}, removing...", suspectedNodeId);
+            await PeerManager.TryRemovePeerAsync(suspect, _ => Task.FromResult(true));
         }
     }
 }
 
 
-
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Cluster\ClusterPeerManager.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
-
 using Clustron.Core.Events;
 using Clustron.Core.Models;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace Clustron.Core.Cluster
@@ -461,7 +413,10 @@ namespace Clustron.Core.Cluster
         private readonly IClusterEventBus _eventBus;
         private readonly ILogger<ClusterPeerManager> _logger;
 
-        public NodeInfo Self { get { return _registry.Self; } }
+        private NodeInfo? _currentLeader;
+        private int _currentEpoch;
+
+        public NodeInfo Self => _registry.Self;
 
         public ClusterPeerManager(PeerRegistry registry, IClusterEventBus eventBus, ILogger<ClusterPeerManager> logger)
         {
@@ -470,8 +425,12 @@ namespace Clustron.Core.Cluster
             _logger = logger;
         }
 
+        // --- PEER ADDITION ---
         public bool RegisterPeer(NodeInfo peer)
         {
+            if (peer.NodeId == Self.NodeId)
+                return false;
+
             bool isNew = _registry.RegisterPeer(peer);
             if (isNew)
             {
@@ -482,57 +441,28 @@ namespace Clustron.Core.Cluster
             return isNew;
         }
 
-        public void MarkHeartbeatReceived(string nodeId)
-        { 
-            _registry.MarkHeartbeatReceived(nodeId);
-        }
-
-        public void RecordMissedHeartbeat(string nodeId)
-        { 
-            _registry.RecordMissedHeartbeat(nodeId);
-        }
-
-        public int GetMissCount(string nodeId) 
+        // --- PEER REMOVAL (With Optional Vetting) ---
+        public async Task<bool> TryRemovePeerAsync(NodeInfo peer, Func<NodeInfo, Task<bool>>? vettingCallback = null)
         {
-            return _registry.GetMissCount(nodeId);
-        }
+            if (!_registry.IsAlive(peer.NodeId))
+            {
+                _logger.LogDebug("Peer {NodeId} not found in active peers", peer.NodeId);
+                return false;
+            }
 
-        public bool HasTimedOut(string nodeId, TimeSpan timeout)
-        { 
-            return _registry.HasTimedOut(nodeId, timeout);
-        }
+            if (vettingCallback != null)
+            {
+                bool permitted = await vettingCallback(peer);
+                if (!permitted)
+                {
+                    _logger.LogInformation("Removal vetoed for peer {NodeId}", peer.NodeId);
+                    return false;
+                }
+            }
 
-        public bool IsAlive(string nodeId)
-        { 
-            return _registry.IsAlive(nodeId);
-        }
-
-        public IEnumerable<NodeInfo> GetAllKnownPeers()
-        {
-            return _registry.GetAllKnownPeers();
-        }
-
-        //public bool MarkPeerDown(NodeInfo peer)
-        //{
-        //    bool wasAlive = _registry.MarkPeerDown(peer);
-        //    if (wasAlive)
-        //    {
-        //        _logger.LogWarning("Node left: {NodeId}", peer.NodeId);
-        //        _eventBus.Publish(new NodeLeftEvent(peer));
-        //    }
-
-        //    return wasAlive;
-        //}
-
-        public bool MarkPeerDown(NodeInfo peer)
-        {
-            
             bool wasAlive = _registry.MarkPeerDown(peer);
             if (wasAlive)
             {
-                string stackTrace = Environment.StackTrace;
-                _logger.LogCritical("MarkPeerDown called. StackTrace:\n{StackTrace}", stackTrace);
-
                 _logger.LogWarning("Node left: {NodeId}", peer.NodeId);
                 _eventBus.Publish(new NodeLeftEvent(peer));
             }
@@ -540,29 +470,67 @@ namespace Clustron.Core.Cluster
             return wasAlive;
         }
 
-        public PeerRegistry Registry => _registry;
+        // --- LEADER MANAGEMENT ---
+        public bool TrySetLeader(NodeInfo leader, int epoch)
+        {
+            if (leader == null || string.IsNullOrWhiteSpace(leader.NodeId))
+            {
+                _logger.LogWarning("TrySetLeader called with null or invalid leader.");
+                return false;
+            }
 
-        public NodeInfo GetPeerById(string id)
-        {
-            return _registry.GetPeer(id);
+            if (_currentLeader?.NodeId == leader.NodeId)
+            {
+                if (epoch < _currentEpoch)
+                {
+                    _logger.LogWarning("Ignoring leader update for {LeaderId} with older epoch {Epoch}", leader.NodeId, epoch);
+                    return false;
+                }
+
+                if (epoch == _currentEpoch)
+                    return false;
+
+                _logger.LogInformation("Updating epoch for leader {LeaderId}: {OldEpoch} → {NewEpoch}", leader.NodeId, _currentEpoch, epoch);
+                _currentEpoch = epoch;
+                return true;
+            }
+
+            if (epoch < _currentEpoch)
+            {
+                _logger.LogWarning("Stale leader claim ignored from {LeaderId} (epoch {Epoch} < {CurrentEpoch})", leader.NodeId, epoch, _currentEpoch);
+                return false;
+            }
+
+            string prev = _currentLeader?.NodeId ?? "<none>";
+            _logger.LogCritical("Changing leader from {OldLeader} to {NewLeader} (epoch {Epoch})", prev, leader.NodeId, epoch);
+
+            _currentLeader = leader;
+            _currentEpoch = epoch;
+
+            _eventBus.Publish(new LeaderChangedEvent(leader, epoch));
+            return true;
         }
 
-        public IEnumerable<NodeInfo> GetPeersWithRole(string role)
-        {
-            return _registry.GetPeersWithRole(role);
-        }
-        public IEnumerable<NodeInfo> GetActivePeers()
-        {
-            return _registry.GetActivePeers();
-        }
+        public NodeInfo? GetLeader() => _currentLeader;
+        public int GetCurrentEpoch() => _currentEpoch;
 
-        public bool IsPeerKnown(string nodeId)
-        {
-            return _registry.Contains(nodeId);
-        }
+        // --- LIVENESS TRACKING ---
+        public void MarkHeartbeatReceived(string nodeId) => _registry.MarkHeartbeatReceived(nodeId);
+        public void RecordMissedHeartbeat(string nodeId) => _registry.RecordMissedHeartbeat(nodeId);
+        public int GetMissCount(string nodeId) => _registry.GetMissCount(nodeId);
+        public bool HasTimedOut(string nodeId, TimeSpan timeout) => _registry.HasTimedOut(nodeId, timeout);
+        public bool IsAlive(string nodeId) => _registry.IsAlive(nodeId);
+
+        // --- ACCESSORS ---
+        public NodeInfo GetPeerById(string id) => _registry.GetPeer(id);
+        public IEnumerable<NodeInfo> GetActivePeers() => _registry.GetActivePeers();
+        public IEnumerable<NodeInfo> GetAllKnownPeers() => _registry.GetAllKnownPeers();
+        public IEnumerable<NodeInfo> GetPeersWithRole(params string[] roles) => _registry.GetPeersWithRole(roles);
+        public bool IsPeerKnown(string nodeId) => _registry.Contains(nodeId);
+
+        public PeerRegistry Registry => _registry; // Consider making this internal-only
     }
 }
-
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Cluster\IClusterCommunication.cs
@@ -853,6 +821,7 @@ namespace Clustron.Core.Cluster;
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using Clustron.Core.Discovery;
 using Clustron.Core.Events;
 using Clustron.Core.Extensions;
 using Clustron.Core.Models;
@@ -863,15 +832,17 @@ namespace Clustron.Core.Cluster;
 public class PeerRegistry
 {
     private readonly NodeInfo _self;
+    private readonly IDiscoveryProvider _discoveryProvider;
     private readonly ConcurrentDictionary<string, NodeInfo> _knownPeers = new();
     private readonly ConcurrentDictionary<string, NodeInfo> _activePeers = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastSeen = new();
     private readonly ConcurrentDictionary<string, int> _missCounts = new();
 
     public NodeInfo Self => _self;
-    public PeerRegistry(NodeInfo self)
+    public PeerRegistry(NodeInfo self, IDiscoveryProvider discoveryProvider)
     {
         _self = self;   
+        _discoveryProvider = discoveryProvider;
     }
 
     public IEnumerable<NodeInfo> GetActivePeers()
@@ -899,6 +870,9 @@ public class PeerRegistry
         _lastSeen[peer.NodeId] = DateTime.UtcNow;
         _missCounts[peer.NodeId] = 0;
 
+        if(_discoveryProvider is IRuntimeUpdatableDiscovery updater)
+            updater.RegisterPeerAsync(peer);
+
         return isNew;
     }
 
@@ -914,8 +888,10 @@ public class PeerRegistry
     public NodeInfo GetPeer(string id) =>
                 _activePeers.Values.Where(p => p.NodeId == id).FirstOrDefault();
 
-    public IEnumerable<NodeInfo> GetPeersWithRole(string role) =>
-    _activePeers.Values.Where(p => p.HasRole(role));
+    public IEnumerable<NodeInfo> GetPeersWithRole(params string[] roles) =>
+                roles.Length == 0
+                    ? _activePeers.Values
+                    : _activePeers.Values.Where(p => roles.Any(r => p.HasRole(r)));
 
     public IEnumerable<NodeInfo> GetPeersWithAnyRole(params string[] roles)
     {
@@ -1721,6 +1697,7 @@ namespace Clustron.Core.Election
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\AsyncClusterEventBus.cs
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Configuration;
 using Clustron.Core.Helpers;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
@@ -1728,9 +1705,11 @@ using Clustron.Core.Serialization;
 using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace Clustron.Core.Events
@@ -1745,12 +1724,21 @@ namespace Clustron.Core.Events
         private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _asyncHandlers = new();
         private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
 
+        private readonly Channel<IClusterEvent> _localEventQueue =
+            Channel.CreateBounded<IClusterEvent>(new BoundedChannelOptions(10000)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            });
+
         public AsyncClusterEventBus(
             ILogger<AsyncClusterEventBus> logger,
             IMessageSerializer serializer)
         {
             _logger = logger;
             _serializer = serializer;
+            _ = Task.Run(ProcessEventQueueAsync);
         }
 
         public void Configure(IClusterCommunication communication, NodeInfo self)
@@ -1780,23 +1768,6 @@ namespace Clustron.Core.Events
 
             _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
                     _serializer.Deserialize<T>(payload)!);
-
-            //_deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
-            //{
-            //    var json = System.Text.Encoding.UTF8.GetString(payload);
-            //    Console.WriteLine($"[DEBUG] Deserializing event: {typeof(T).FullName}");
-            //    Console.WriteLine($"[DEBUG] Raw JSON:\n{json}");
-
-            //    var result = _serializer.Deserialize<T>(payload)!;
-
-            //    var payloadProp = typeof(T).GetProperty("Payload");
-            //    var payloadValue = payloadProp?.GetValue(result);
-            //    Console.WriteLine($"[DEBUG] Payload is {(payloadValue == null ? "NULL ❌" : "OK ✅")}");
-
-            //    return result;
-            //});
-
-
         }
 
         private void AddHandler(Type type, Func<IClusterEvent, Task> handler)
@@ -1819,27 +1790,22 @@ namespace Clustron.Core.Events
             options ??= new EventDispatchOptions();
             var type = evt.GetType();
 
-            var isFromNetwork = options.Scope == DeliveryScope.LocalOnly;
-
-            // Cluster broadcast if requested
             if (options.Scope == DeliveryScope.ClusterWide)
             {
                 await BroadcastEventAsync(evt, type);
             }
 
-            // Only dispatch locally if:
-            // - It's local-only
-            // - OR it's the original publish (not re-broadcast from network)
             if (!_asyncHandlers.TryGetValue(type, out var handlers))
                 return;
 
+            if (options.Scope == DeliveryScope.LocalOnly && options.Policy == DispatchPolicy.FireAndForget)
+            {
+                await _localEventQueue.Writer.WriteAsync(evt);
+                return;
+            }
+
             switch (options.Policy)
             {
-                case DispatchPolicy.FireAndForget:
-                    foreach (var handler in handlers.ToArray())
-                        _ = Task.Run(() => handler(evt));
-                    break;
-
                 case DispatchPolicy.Parallel:
                     await Task.WhenAll(handlers.ToArray().Select(h => h(evt)));
                     break;
@@ -1862,12 +1828,9 @@ namespace Clustron.Core.Events
             }
         }
 
-
-
         public void Publish(IClusterEvent evt) =>
             PublishAsync(evt).GetAwaiter().GetResult();
 
-        
         public Task PublishFromNetworkAsync(byte[] payload, string eventType)
         {
             if (_deserializers.TryGetValue(eventType, out var factory))
@@ -1884,10 +1847,37 @@ namespace Clustron.Core.Events
             var message = MessageBuilder.Create(
                 _self.NodeId,
                 evt.EventType,
-                type.AssemblyQualifiedName!, // full type info
-                evt); // send event directly
+                type.AssemblyQualifiedName!,
+                evt);
 
-            await _communication.Transport.BroadcastAsync(message);
+            var targetRoles = evt.EventType == MessageTypes.CustomEvent
+                ? new[] { ClustronRoles.Member }
+                : Array.Empty<string>();
+
+            await _communication.Transport.BroadcastAsync(message, targetRoles);
+        }
+
+        private async Task ProcessEventQueueAsync()
+        {
+            await foreach (var evt in _localEventQueue.Reader.ReadAllAsync())
+            {
+                var type = evt.GetType();
+
+                if (_asyncHandlers.TryGetValue(type, out var handlers))
+                {
+                    foreach (var handler in handlers.ToArray())
+                    {
+                        try
+                        {
+                            await handler(evt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Event handler failed for {Type}", type.Name);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -3016,14 +3006,6 @@ public class NodeJoinedHandler : IMessageHandler
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Handlers\NodeLeftHandler.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
-
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Events;
@@ -3032,48 +3014,49 @@ using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Serialization;
 using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
 
-namespace Clustron.Core.Handlers;
-public class NodeLeftHandler : IMessageHandler
+namespace Clustron.Core.Handlers
 {
-    private readonly IHeartbeatMonitor _heartbeatMonitor;
-    private readonly ILogger<NodeLeftHandler> _logger;
-    private readonly IMessageSerializer _serializer;
-    private readonly ClusterPeerManager _peerManager;
-
-    public NodeLeftHandler(
-        IHeartbeatMonitor heartbeatMonitor,
-        IMessageSerializer serializer,
-        ClusterPeerManager peerManager,
-        ILogger<NodeLeftHandler> logger)
+    public class NodeLeftHandler : IMessageHandler
     {
-        _heartbeatMonitor = heartbeatMonitor;
-        _serializer = serializer;
-        _peerManager = peerManager;
-        _logger = logger;
-    }
+        private readonly ILogger<NodeLeftHandler> _logger;
+        private readonly IMessageSerializer _serializer;
+        private readonly ClusterPeerManager _peerManager;
+        private readonly IHeartbeatMonitor _heartbeatMonitor;
 
-    public string Type => MessageTypes.NodeLeft;
-
-    public Task HandleAsync(Message message)
-    {
-        var nodeLeftEvent = _serializer.Deserialize<NodeLeftEvent>(message.Payload);
-
-        if (nodeLeftEvent == null || string.IsNullOrWhiteSpace(nodeLeftEvent.Node.NodeId))
+        public NodeLeftHandler(
+            IHeartbeatMonitor heartbeatMonitor,
+            IMessageSerializer serializer,
+            ClusterPeerManager peerManager,
+            ILogger<NodeLeftHandler> logger)
         {
-            _logger.LogWarning("Received NodeLeft message with null or empty NodeInfo.");
-            return Task.CompletedTask;
+            _serializer = serializer;
+            _peerManager = peerManager;
+            _logger = logger;
+            _heartbeatMonitor = heartbeatMonitor;
         }
 
-        _logger.LogCritical("Node left: {NodeId} from Sender {SenderId}", nodeLeftEvent.Node.NodeId, message.SenderId);
+        public string Type => MessageTypes.NodeLeft;
 
-        _heartbeatMonitor.MarkNodeLeft(nodeLeftEvent.Node);
-        _peerManager.MarkPeerDown(nodeLeftEvent.Node); // lifecycle will be triggered from here
+        public async Task HandleAsync(Message message)
+        {
+            var nodeLeftEvent = _serializer.Deserialize<NodeLeftEvent>(message.Payload);
 
-        return Task.CompletedTask;
+            if (nodeLeftEvent == null || string.IsNullOrWhiteSpace(nodeLeftEvent.Node.NodeId))
+            {
+                _logger.LogWarning("Received NodeLeft message with null or empty NodeInfo.");
+                return;
+            }
+
+            var target = nodeLeftEvent.Node;
+
+            _logger.LogWarning("Received NodeLeft notice for {NodeId} from sender {SenderId}", target.NodeId, message.SenderId);
+
+            await _heartbeatMonitor.MarkNodeLeft(target);
+        }
     }
 }
-
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Handshake\BasicHandshakeProtocol.cs
@@ -3263,6 +3246,7 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
         NodeJoinedHandler nodeJoinedHandler,
         IClusterLoggerProvider loggerProvider)
     {
+        _runtime = clusterRuntime;
         _self = clusterRuntime.Self;
         _communication = communication;
         _discoveryProvider = discovery.DiscoveryProvider;
@@ -3326,19 +3310,8 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
         var accepted = request.ClusterId == _self.ClusterId && request.Version == _self.Version;
         var reason = accepted ? "Accepted" : "Cluster/Version mismatch";
 
-        if (accepted && _discoveryProvider is IRuntimeUpdatableDiscovery updater)
-        {
-            _logger.LogInformation("Registering discovered peer: {NodeId}", request.Sender.NodeId);
-            await updater.RegisterPeerAsync(request.Sender);
-
-            //_logger.LogInformation("Locally triggering node join handler for {NodeId}", request.Sender.NodeId);
-
-            //var nodeJoinEvent = new NodeJoinedEvent(request.Sender);
-            //var joinMessage = MessageBuilder.Create<NodeJoinedEvent>(_self.NodeId, MessageTypes.NodeJoined, nodeJoinEvent);
-
-            //await _nodeJoinedHandler.HandleAsync(joinMessage);
-        }
-
+        if(accepted)
+            _runtime.PeerManager.RegisterPeer(request.Sender);
 
         return new HandshakeResponse
         {
@@ -3538,29 +3511,16 @@ namespace Clustron.Core.Health
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Health\TcpHeartbeatMonitor.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
-
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Events;
+using Clustron.Core.Health;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
 using Clustron.Core.Observability;
 using Clustron.Core.Serialization;
 using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
-using System.Net.Sockets;
-using System.Threading;
-using System.Xml.Linq;
-
-namespace Clustron.Core.Health;
 
 public class TcpHeartbeatMonitor : IHeartbeatMonitor
 {
@@ -3579,8 +3539,8 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
 
     public event Func<NodeInfo, Task>? OnNodeFailed;
 
-    public TcpHeartbeatMonitor(IClusterRuntime clusterRuntime, IMessageSerializer serializer, IMetricContributor metrics, 
-                            IClusterLoggerProvider loggerProvider)
+    public TcpHeartbeatMonitor(IClusterRuntime clusterRuntime, IMessageSerializer serializer, IMetricContributor metrics,
+                                IClusterLoggerProvider loggerProvider)
     {
         _logger = loggerProvider.GetLogger<TcpHeartbeatMonitor>();
         _serializer = serializer;
@@ -3593,7 +3553,6 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
         _clusterLeader = controller;
         _transport = transport.Value;
     }
-
 
     public Task StartAsync(NodeInfo self, IEnumerable<NodeInfo> peers)
     {
@@ -3617,7 +3576,14 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
 
     public async Task RemovePeer(NodeInfo peer)
     {
-        _peerManager.MarkPeerDown(peer);
+        _logger.LogWarning("Attempting to remove peer {NodeId} from monitor", peer.NodeId);
+
+        await _peerManager.TryRemovePeerAsync(peer, async p =>
+        {
+            bool unreachable = !(await _transport.CanReachNodeAsync(p));
+            _logger.LogDebug("Peer {NodeId} reachability check: {Reachable}", p.NodeId, !unreachable);
+            return unreachable;
+        });
 
         _transport.RemoveConnection(peer.NodeId);
 
@@ -3625,15 +3591,11 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
             await OnNodeFailed.Invoke(peer);
     }
 
-
     public async Task MarkNodeLeft(NodeInfo node)
     {
-        _logger.LogWarning("Removing node from heartbeat tracking: {NodeId}", node.NodeId);
+        _logger.LogWarning("Removing node from heartbeat tracking (external event): {NodeId}", node.NodeId);
         await RemovePeer(node);
-        _peerManager.MarkPeerDown(node);
     }
-
-    //public bool IsAlive(string nodeId) => _peerRegistry.IsAlive(nodeId);
 
     public void MarkHeartbeatReceived(string nodeId)
     {
@@ -3686,7 +3648,7 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
                 {
                     _peerManager.RecordMissedHeartbeat(peer.NodeId);
 
-                    if (_peerManager.GetMissCount(peer.NodeId) == 1)
+                    if (missCount == 1)
                     {
                         _logger.LogWarning("Suspecting node {NodeId} due to missed heartbeat.", peer.NodeId);
 
@@ -3694,14 +3656,13 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
                         {
                             var hbsuspect = new HeartbeatSuspect(peer);
                             var msg = MessageBuilder.Create<HeartbeatSuspect>(_self.NodeId, MessageTypes.HeartbeatSuspect, hbsuspect);
-                            
                             _ = _transport.SendAsync(_clusterLeader.Value.CurrentLeader, msg);
                         }
                     }
 
                     if (_peerManager.HasTimedOut(peer.NodeId, _timeout) && _peerManager.IsAlive(peer.NodeId))
                     {
-                        _logger.LogWarning("Node failed: {NodeId}", peer.NodeId);
+                        _logger.LogWarning("Node failed after timeout: {NodeId}", peer.NodeId);
                         await RemovePeer(peer);
                         await _transport.HandlePeerDownAsync(peer.NodeId);
                     }
@@ -3719,15 +3680,14 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
         }
     }
 
-
     private async Task<bool> SendHeartbeatAsync(NodeInfo node)
     {
         try
         {
-            var heartbeatPayload = new HeartbeatPayload 
-            { 
-                LeaderId = _clusterLeader.Value.CurrentLeader.NodeId, 
-                LeaderEpoch = _clusterLeader.Value.CurrentEpoch 
+            var heartbeatPayload = new HeartbeatPayload
+            {
+                LeaderId = _clusterLeader.Value.CurrentLeader.NodeId,
+                LeaderEpoch = _clusterLeader.Value.CurrentEpoch
             };
 
             var correlationId = Guid.NewGuid().ToString();
@@ -3744,9 +3704,7 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
             return false;
         }
     }
-
 }
-
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Helpers\ClustronRoles.cs
@@ -4061,7 +4019,7 @@ public static class InternalServiceRegistration
         services.AddSingleton(self);
         services.AddSingleton(loggerFactory);
 
-        var serializer = new JsonMessageSerializer();
+        var serializer = new MessagePackSerializerAdapter();
         MessageBuilder.Configure(serializer);
 
         IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>(), serializer);
@@ -4069,7 +4027,7 @@ public static class InternalServiceRegistration
 
         var discoveryProvider = new AdaptiveDiscoveryProvider(config.StaticNodes ?? []);
         var nullTransport = new NullTransport();
-        var peerRegistry = new PeerRegistry(self);
+        var peerRegistry = new PeerRegistry(self, discoveryProvider);
         var peerManager = new ClusterPeerManager(peerRegistry, eventBus, loggerFactory.CreateLogger<ClusterPeerManager>());
 
 
@@ -4445,7 +4403,6 @@ public class ClusterMessageRouter : IMessageRouter
         {
             try
             {
-                _metrics.Increment(MetricKeys.Messages.Received);
                 await handler.HandleAsync(message);
             }
             catch (Exception ex)
@@ -4933,8 +4890,9 @@ public class RollingCounter
         for (int i = 0; i < elapsedSeconds; i++)
         {
             _index = (_index + 1) % _windowSize;
-            _buffer[_index] = (i == 0) ? _currentSecondCount : 0;
+            _buffer[_index] = 0;
         }
+        _buffer[_index] = _currentSecondCount;
 
         _lastSecond = _lastSecond.AddSeconds(elapsedSeconds);
         _currentSecondCount = 0;
@@ -5046,12 +5004,15 @@ public class RollingMetricsRegistry : IMetricsSnapshotProvider
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using System;
+
 namespace Clustron.Core.Serialization;
 public interface IMessageSerializer
 {
     byte[] Serialize<T>(T obj);
     byte[] Serialize(Type type, object value);
     T Deserialize<T>(byte[] data);
+    T Deserialize<T>(ReadOnlySpan<byte> data);
 
     object Deserialize(byte[] data, Type type);
 }
@@ -5100,8 +5061,10 @@ namespace Clustron.Core.Serialization
 
         public object Deserialize(byte[] data, Type type) =>
             JsonSerializer.Deserialize(data, type)!;
-    }
 
+        public T Deserialize<T>(ReadOnlySpan<byte> data) =>
+            JsonSerializer.Deserialize<T>(data, _options)!;
+    }
 }
 
 
@@ -5115,28 +5078,43 @@ namespace Clustron.Core.Serialization
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
 
+using MessagePack;
+using MessagePack.Resolvers;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using MessagePack;
 
 
 namespace Clustron.Core.Serialization
 {
     public class MessagePackSerializerAdapter : IMessageSerializer
     {
-        public byte[] Serialize<T>(T obj) => MessagePackSerializer.Serialize(obj);
-        public T Deserialize<T>(byte[] data) => MessagePackSerializer.Deserialize<T>(data);
+        private static readonly MessagePackSerializerOptions _options =
+            MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
+        
+        public byte[] Serialize<T>(T obj) =>
+            MessagePackSerializer.Serialize(obj, _options);
+
+        public byte[] Serialize(Type type, object value) =>
+            MessagePackSerializer.Serialize(type, value, _options);
+
+        public T Deserialize<T>(byte[] data) =>
+            MessagePackSerializer.Deserialize<T>(data, _options);
+
+        public T Deserialize<T>(ReadOnlySpan<byte> data)
+        {
+            var memory = new ReadOnlyMemory<byte>(data.ToArray()); // causes allocation
+            var sequence = new ReadOnlySequence<byte>(memory);
+            var reader = new MessagePackReader(sequence);
+            return MessagePackSerializer.Deserialize<T>(ref reader, _options);
+        }
 
         public object Deserialize(byte[] data, Type type) =>
-            MessagePackSerializer.Deserialize(type, data);
+            MessagePackSerializer.Deserialize(type, data, _options);
 
-        public byte[] Serialize(Type type, object value)
-        {
-            throw new NotImplementedException();
-        }
     }
 }
 
@@ -5183,21 +5161,32 @@ public abstract class BaseTcpTransport : ITransport
 
         _logger = logger;
 
-        _timer = new Timer(_ => CleanupIdleConnections(TimeSpan.FromMinutes(10)), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+        _timer = new Timer(_ => CleanupIdleConnections(TimeSpan.FromMinutes(1)), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
     }
 
     public abstract Task StartAsync(IMessageRouter router);
     public abstract Task SendAsync(NodeInfo target, Message message);
+
+    public abstract Task SendAsync(NodeInfo target, byte[] data);
     public abstract void RemoveConnection(string nodeId);
     public abstract Task<bool> CanReachNodeAsync(NodeInfo node);
 
-    public virtual async Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null)
+    public virtual async Task BroadcastAsync(Message message, params string[] roles)
     {
-        var excludedIds = exclude?.Select(n => n.NodeId).ToHashSet() ?? new();
-        var peers = _peerManager.GetActivePeers()
-            .Where(p => p.NodeId != message.SenderId && !excludedIds.Contains(p.NodeId));
+        var peers = _peerManager.GetPeersWithRole(roles);
+        var body = _serializer.Serialize(message);
 
-        await Task.WhenAll(peers.Select(p => SendAsync(p, message)));
+        var tasks = new List<Task>();
+
+        foreach (var peer in peers)
+        {
+            if (peer.NodeId == message.SenderId)
+                continue;
+
+            tasks.Add(SendSafeAsync(peer, body));
+        }
+
+        await Task.WhenAll(tasks);
     }
 
     public virtual Task<Message> WaitForResponseAsync(string expectedSenderId, string correlationId, TimeSpan timeout)
@@ -5233,17 +5222,29 @@ public abstract class BaseTcpTransport : ITransport
         }
     }
 
-    void CleanupIdleConnections(TimeSpan idleTimeout)
+    private async Task SendSafeAsync(NodeInfo peer, byte[] data)
+    {
+        try
+        {
+            await SendAsync(peer, data);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Failed to send broadcast to {NodeId}: {Message}", peer.NodeId, ex.Message);
+        }
+    }
+
+    private void CleanupIdleConnections(TimeSpan idleTimeout)
     {
         foreach (var conn in _connections)
         {
             if (DateTime.UtcNow - conn.Value.LastUsedUtc > idleTimeout)
             {
-                _logger.LogInformation(
+                _logger.LogWarning(
                 "Disposing idle connection to {RemoteNodeId} (idle for {IdleDuration} seconds)",
                 conn.Value.RemoteNodeId, (int)idleTimeout.TotalSeconds);
 
-                RemoveConnection(conn.Value.RemoteNodeId);
+                HandlePeerDownAsync(conn.Value.RemoteNodeId);
             }
         }
     }
@@ -5273,6 +5274,7 @@ using Microsoft.Extensions.Logging;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 
@@ -5332,68 +5334,109 @@ public class DuplexTcpTransport : BaseTcpTransport
     }
 
 
+    //private async Task HandleClientAsync(TcpClient client, IMessageRouter router)
+    //{
+    //    using var stream = client.GetStream();
+    //    string? senderId = null;
+
+    //    try
+    //    {
+    //        while (true)
+    //        {
+    //            var lengthBuffer = ArrayPool<byte>.Shared.Rent(4);
+    //            try
+    //            {
+    //                await ReadExactlyAsync(stream, lengthBuffer, 0, 4);
+
+    //                int length = BitConverter.ToInt32(lengthBuffer, 0);
+    //                if (length <= 0 || length > 1024 * 10)
+    //                {
+    //                    _logger.LogCritical("HandleClientAsync: Invalid message length received: {Length}", length);
+    //                    break;
+    //                }
+
+    //                var payloadBuffer = ArrayPool<byte>.Shared.Rent(length);
+    //                try
+    //                {
+    //                    await ReadExactlyAsync(stream, payloadBuffer, 0, length);
+    //                    var message = _serializer.Deserialize<Message>(payloadBuffer.AsSpan(0, length));
+
+    //                    if (message == null) continue;
+
+    //                    senderId = message.SenderId;
+
+    //                    if (!string.IsNullOrEmpty(message.CorrelationId) &&
+    //                        _responseAwaiters.TryGetValue(message.CorrelationId, out var tcs))
+    //                    {
+    //                        tcs.TrySetResult(message);
+    //                        _responseAwaiters.TryRemove(message.CorrelationId, out _);
+    //                    }
+    //                    else
+    //                    {
+    //                        if(message.MessageType == MessageTypes.NodeLeft)
+    //                            _logger.LogCritical("Something unexpected happened. CorrelationId: {CorrelationId} for message {message}", message.CorrelationId, message.ToString());
+    //                        await router.RouteAsync(message);
+    //                    }
+    //                }
+    //                finally
+    //                {
+    //                    ArrayPool<byte>.Shared.Return(payloadBuffer);
+    //                }
+    //            }
+    //            finally
+    //            {
+    //                ArrayPool<byte>.Shared.Return(lengthBuffer);
+    //            }
+    //        }
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        _logger.LogCritical("Inbound connection failed: {Error}", ex.ToString());
+    //    }
+    //    finally
+    //    {
+    //        if (!string.IsNullOrEmpty(senderId))
+    //        {
+    //            await HandlePeerDownAsync(senderId); // triggers proper peer removal
+    //        }
+
+    //        client.Close();
+    //    }
+    //}
+
     private async Task HandleClientAsync(TcpClient client, IMessageRouter router)
     {
         using var stream = client.GetStream();
+        var reader = PipeReader.Create(stream);
         string? senderId = null;
 
         try
         {
             while (true)
             {
-                var lengthBuffer = ArrayPool<byte>.Shared.Rent(4);
-                try
+                var result = await reader.ReadAsync();
+                var buffer = result.Buffer;
+
+                while (TryReadMessage(ref buffer, out var message))
                 {
-                    int read = await stream.ReadAsync(lengthBuffer, 0, 4);
-                    if (read == 0)
-                    {
-                        _logger.LogError("HandleClientAsync: Stream read returned 0. Remote: {RemoteEndPoint}, Local: {LocalEndPoint}",
-                            ((IPEndPoint)client.Client.RemoteEndPoint)?.ToString(),
-                            ((IPEndPoint)client.Client.LocalEndPoint)?.ToString());
+                    senderId = message.SenderId;
 
-                        break;
+                    if (!string.IsNullOrEmpty(message.CorrelationId) &&
+                        _responseAwaiters.TryRemove(message.CorrelationId, out var tcs))
+                    {
+                        tcs.TrySetResult(message);
                     }
-
-                    int length = BitConverter.ToInt32(lengthBuffer, 0);
-                    if (length <= 0 || length > 1024 * 10)
+                    else
                     {
-                        _logger.LogCritical("HandleClientAsync: Invalid message length received: {Length}", length);
-                        break;
-                    }
-
-                    var payloadBuffer = ArrayPool<byte>.Shared.Rent(length);
-                    try
-                    {
-                        await ReadExactlyAsync(stream, payloadBuffer, 0, length);
-                        var payload = payloadBuffer.AsSpan(0, length).ToArray();
-                        var message = _serializer.Deserialize<Message>(payload);
-
-                        if (message == null) continue;
-
-                        senderId = message.SenderId;
-
-                        if (!string.IsNullOrEmpty(message.CorrelationId) &&
-                            _responseAwaiters.TryGetValue(message.CorrelationId, out var tcs))
-                        {
-                            tcs.TrySetResult(message);
-                            _responseAwaiters.TryRemove(message.CorrelationId, out _);
-                        }
-                        else
-                        {
-                            if(message.MessageType == MessageTypes.NodeLeft)
-                                _logger.LogCritical("Something unexpected happened. CorrelationId: {CorrelationId} for message {message}", message.CorrelationId, message.ToString());
-                            await router.RouteAsync(message);
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(payloadBuffer);
+                        await router.RouteAsync(message);
+                        _metrics.Increment(MetricKeys.Msg.Wire.Received);
                     }
                 }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(lengthBuffer);
-                }
+
+                reader.AdvanceTo(buffer.Start, buffer.End);
+
+                if (result.IsCompleted)
+                    break;
             }
         }
         catch (Exception ex)
@@ -5403,26 +5446,27 @@ public class DuplexTcpTransport : BaseTcpTransport
         finally
         {
             if (!string.IsNullOrEmpty(senderId))
-            {
-                await HandlePeerDownAsync(senderId); // triggers proper peer removal
-            }
-
-            Debugger.Break();
+                await HandlePeerDownAsync(senderId);
 
             client.Close();
         }
     }
 
+    
     public override async Task SendAsync(NodeInfo target, Message message)
     {
         var body = _serializer.Serialize(message);
-        var length = BitConverter.GetBytes(body.Length);
+        await SendAsync(target, body);
 
-        if(body.Length == 0 || length.Length == 0)
-            Debugger.Break();
+    }
+
+    public override async Task SendAsync(NodeInfo target, byte[] data)
+    {
+        var length = BitConverter.GetBytes(data.Length);
 
         var sendLock = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
         await sendLock.WaitAsync();
+
         try
         {
             await RetryHelper.RetryAsync(async () =>
@@ -5434,16 +5478,25 @@ public class DuplexTcpTransport : BaseTcpTransport
                 conn.LastUsedUtc = DateTime.UtcNow;
                 var stream = conn.Stream;
 
-                await stream.WriteAsync(length, 0, length.Length);
-                await stream.WriteAsync(body, 0, body.Length);
+                // ✅ Use a single buffer to reduce syscalls
+                var buffer = ArrayPool<byte>.Shared.Rent(length.Length + data.Length);
+                try
+                {
+                    Buffer.BlockCopy(length, 0, buffer, 0, length.Length);
+                    Buffer.BlockCopy(data, 0, buffer, length.Length, data.Length);
+
+                    await stream.WriteAsync(buffer.AsMemory(0, length.Length + data.Length));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
             }, _retryOptions.MaxAttempts, _retryOptions.DelayMilliseconds, _logger);
 
-            _metrics.Increment(MetricKeys.Messages.Sent);
+            _metrics.Increment(MetricKeys.Msg.Wire.Sent);
         }
         catch (Exception ex)
         {
-            Debugger.Break();
-
             _logger.LogWarning("Failed to send message to {NodeId}: {Message}", target.NodeId, ex.Message);
             _connections.TryRemove(target.NodeId, out var failedConn);
             failedConn?.Dispose();
@@ -5452,6 +5505,32 @@ public class DuplexTcpTransport : BaseTcpTransport
         {
             sendLock.Release();
         }
+    }
+
+    private bool TryReadMessage(ref ReadOnlySequence<byte> buffer, out Message? message)
+    {
+        message = null;
+
+        var reader = new SequenceReader<byte>(buffer);
+        if (!reader.TryReadLittleEndian(out int length))
+            return false;
+
+        if (reader.Remaining < length)
+            return false;
+
+        var payload = buffer.Slice(reader.Position, length);
+
+        try
+        {
+            message = _serializer.Deserialize<Message>(payload.ToArray()); // Optimize: use Span-based overload if available
+        }
+        catch
+        {
+            return false;
+        }
+
+        buffer = buffer.Slice(reader.Position).Slice(length);
+        return true;
     }
 
     private async Task<PersistentConnection?> GetOrCreateConnectionAsync(NodeInfo target)
@@ -5491,17 +5570,21 @@ public class DuplexTcpTransport : BaseTcpTransport
         try
         {
             var conn = await GetOrCreateConnectionAsync(node);
-            return conn?.IsConnected == true;
+            if (conn?.IsConnected == true)
+            {
+                conn.LastUsedUtc = DateTime.UtcNow;
+                return true;
+            }
         }
         catch
         {
-            return false;
         }
+
+        return false;
     }
 
     public override void RemoveConnection(string nodeId)
     {
-        Debugger.Break();
         if (_connections.TryRemove(nodeId, out var conn))
         {
             conn.Dispose();
@@ -5509,17 +5592,29 @@ public class DuplexTcpTransport : BaseTcpTransport
         }
     }
 
-    public override Task HandlePeerDownAsync(string nodeId)
+    public override async Task HandlePeerDownAsync(string nodeId)
     {
         var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
-        if (node != null)
+        if (node == null)
         {
-            _peerManager.MarkPeerDown(node);
+            _logger.LogWarning("HandlePeerDownAsync called, but node {NodeId} not found in registry.", nodeId);
+            return;
         }
 
-        RemoveConnection(nodeId);
-        return Task.CompletedTask;
+        // Vet and remove via central peer manager
+        bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+        {
+            bool reachable = await CanReachNodeAsync(p);
+            _logger.LogDebug("Vet before removal: node {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+            return !reachable;
+        });
+
+        if (removed)
+        {
+            RemoveConnection(nodeId);
+        }
     }
+
 }
 
 
@@ -5544,7 +5639,7 @@ namespace Clustron.Core.Transport
         Task SendAsync(NodeInfo target, Message message);
         Task StartAsync(IMessageRouter router);          
         Task<Message> WaitForResponseAsync(string expectedSenderId, string correlationId, TimeSpan timeout);
-        Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null);
+        Task BroadcastAsync(Message message, params string[] roles);
         void RemoveConnection(string nodeId);
         Task<bool> CanReachNodeAsync(NodeInfo node);
         Task HandlePeerDownAsync(string nodeId);
@@ -5607,7 +5702,7 @@ public class NullTransport : ITransport
         return Task.FromResult<Message>(null!); // Will crash if called — placeholder only
     }
 
-    public Task BroadcastAsync(Message message, IEnumerable<NodeInfo>? exclude = null)
+    public Task BroadcastAsync(Message message, params string[] roles)
     {
         return Task.CompletedTask;
     }
@@ -5672,6 +5767,246 @@ public class PersistentConnection
 
 
 
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Transport\PipelinedTcpTransport.cs
+using Clustron.Abstractions;
+using Clustron.Core.Cluster;
+using Clustron.Core.Configuration;
+using Clustron.Core.Helpers;
+using Clustron.Core.Messaging;
+using Clustron.Core.Models;
+using Clustron.Core.Observability;
+using Clustron.Core.Serialization;
+using Microsoft.Extensions.Logging;
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.IO.Pipelines;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading.Channels;
+
+namespace Clustron.Core.Transport;
+
+public class PipelinedTcpTransport : BaseTcpTransport
+{
+    private readonly int _port;
+    private TcpListener? _listener;
+    private readonly ConcurrentDictionary<string, Channel<byte[]>> _outgoingChannels = new();
+    private readonly ILogger _logger;
+    private readonly IMetricContributor _metrics;
+    private readonly RetryOptions _retryOptions;
+
+    public PipelinedTcpTransport(
+        int port,
+        IClusterRuntime runtime,
+        IMessageSerializer serializer,
+        IMetricContributor metrics,
+        IClusterLoggerProvider loggerProvider,
+        RetryOptions retryOptions)
+        : base(runtime, serializer, loggerProvider.GetLogger<PipelinedTcpTransport>())
+    {
+        _port = port;
+        _metrics = metrics;
+        _retryOptions = retryOptions;
+    }
+
+    public override Task StartAsync(IMessageRouter router)
+    {
+        _listener = new TcpListener(IPAddress.Any, _port);
+        _listener.Start();
+
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                var client = await _listener.AcceptTcpClientAsync();
+                _ = HandleClientAsync(client, router);
+            }
+        });
+
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleClientAsync(TcpClient client, IMessageRouter router)
+    {
+        using var stream = client.GetStream();
+        var reader = PipeReader.Create(stream);
+        string? senderId = null;
+
+        try
+        {
+            while (true)
+            {
+                var result = await reader.ReadAsync();
+                var buffer = result.Buffer;
+
+                while (TryReadMessage(ref buffer, out var message))
+                {
+                    senderId = message.SenderId;
+                    if (!string.IsNullOrEmpty(message.CorrelationId) &&
+                        _responseAwaiters.TryRemove(message.CorrelationId, out var tcs))
+                    {
+                        tcs.TrySetResult(message);
+                    }
+                    else
+                    {
+                        await router.RouteAsync(message);
+                        _metrics.Increment(MetricKeys.Msg.Wire.Received);
+                    }
+                }
+
+                reader.AdvanceTo(buffer.Start, buffer.End);
+                if (result.IsCompleted) break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("HandleClientAsync failed: {Error}", ex.Message);
+        }
+        finally
+        {
+            if (!string.IsNullOrEmpty(senderId))
+                await HandlePeerDownAsync(senderId);
+
+            client.Close();
+        }
+    }
+
+    private bool TryReadMessage(ref ReadOnlySequence<byte> buffer, out Message? message)
+    {
+        message = null;
+        var reader = new SequenceReader<byte>(buffer);
+
+        if (!reader.TryReadLittleEndian(out int length) || reader.Remaining < length)
+            return false;
+
+        var payload = buffer.Slice(reader.Position, length);
+        message = _serializer.Deserialize<Message>(payload.ToArray());
+
+        buffer = buffer.Slice(reader.Position).Slice(length);
+        return true;
+    }
+
+    public override async Task SendAsync(NodeInfo target, Message message)
+    {
+        var data = _serializer.Serialize(message);
+        await SendAsync(target, data);
+    }
+
+    public override async Task SendAsync(NodeInfo target, byte[] data)
+    {
+        var channel = _outgoingChannels.GetOrAdd(target.NodeId, key =>
+        {
+            var options = new BoundedChannelOptions(1024)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            };
+            var ch = Channel.CreateBounded<byte[]>(options);
+            _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
+            return ch;
+        });
+
+        await channel.Writer.WriteAsync(data);
+    }
+
+    private async Task ProcessSendQueue(NodeInfo target, ChannelReader<byte[]> reader)
+    {
+        PersistentConnection? conn = null;
+
+        while (await reader.WaitToReadAsync())
+        {
+            while (reader.TryRead(out var data))
+            {
+                try
+                {
+                    conn ??= await GetOrCreateConnectionAsync(target);
+                    if (conn == null || !conn.IsConnected)
+                    {
+                        conn?.Dispose();
+                        _connections.TryRemove(target.NodeId, out _);
+                        conn = await GetOrCreateConnectionAsync(target);
+                        if (conn == null || !conn.IsConnected)
+                            throw new IOException("Connection unavailable");
+                    }
+
+                    var stream = conn.Stream;
+
+                    await RetryHelper.RetryAsync(async () =>
+                    {
+                        var buffer = ArrayPool<byte>.Shared.Rent(4 + data.Length);
+                        try
+                        {
+                            BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
+                            data.CopyTo(buffer, 4);
+                            await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
+                            conn.LastUsedUtc = DateTime.UtcNow;
+                        }
+                        finally
+                        {
+                            ArrayPool<byte>.Shared.Return(buffer);
+                        }
+                    }, _retryOptions.MaxAttempts, _retryOptions.DelayMilliseconds, _logger);
+
+                    _metrics.Increment(MetricKeys.Msg.Wire.Sent);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Send failed to {NodeId}: {Message}", target.NodeId, ex.Message);
+                    conn?.Dispose();
+                    _connections.TryRemove(target.NodeId, out _);
+                    conn = null;
+                    await Task.Delay(100);
+                }
+            }
+        }
+    }
+
+    private async Task<PersistentConnection?> GetOrCreateConnectionAsync(NodeInfo target)
+    {
+        if (_connections.TryGetValue(target.NodeId, out var existingConn) && existingConn.IsConnected)
+        {
+            existingConn.LastUsedUtc = DateTime.UtcNow;
+            return existingConn;
+        }
+
+        try
+        {
+            var client = new TcpClient();
+            await client.ConnectAsync(target.Host, target.Port);
+            var conn = new PersistentConnection(client)
+            {
+                RemoteNodeId = target.NodeId,
+                IsInbound = false
+            };
+            _connections[target.NodeId] = conn;
+            return conn;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Failed to connect to {NodeId}: {Error}", target.NodeId, ex.Message);
+            return null;
+        }
+    }
+
+    public override Task<bool> CanReachNodeAsync(NodeInfo node)
+    {
+        return Task.FromResult(_connections.TryGetValue(node.NodeId, out var conn) && conn.IsConnected);
+    }
+
+    public override void RemoveConnection(string nodeId)
+    {
+        if (_connections.TryRemove(nodeId, out var conn))
+        {
+            conn.Dispose();
+            _logger.LogInformation("Removed connection to {NodeId}", nodeId);
+        }
+
+        _outgoingChannels.TryRemove(nodeId, out _);
+    }
+}
+
+
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Transport\TransportFactory.cs
 // Copyright (c) 2025 zeroheartbeat
 //
@@ -5722,7 +6057,7 @@ public class TransportFactory : ITransportFactory
     public ITransport Create()
     {
         ITransport transport = _config.UseDuplexConnections
-            ? new DuplexTcpTransport(_config.Port, _clusterRuntime, _serializer, _metricContributor, _loggerProvider, _config.RetryOptions)
+            ? new PipelinedTcpTransport(_config.Port, _clusterRuntime, _serializer, _metricContributor, _loggerProvider, _config.RetryOptions)
             : new UnidirectionalTcpTransport(_config.Port, _clusterRuntime, _serializer, _loggerProvider);
 
         _communication.OverrideTransport(transport); // important for ClusterContext transport access
@@ -5871,17 +6206,29 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
         }
     }
 
-    public override Task HandlePeerDownAsync(string nodeId)
+    public override async Task HandlePeerDownAsync(string nodeId)
     {
         var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
-        if (node != null)
+        if (node == null)
         {
-            _peerManager.MarkPeerDown(node);
+            _logger.LogWarning("HandlePeerDownAsync: node {NodeId} not found in known peers.", nodeId);
+            return;
         }
 
-        RemoveConnection(nodeId);
-        return Task.CompletedTask;
+        // Run vetting logic via centralized manager
+        bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+        {
+            bool reachable = await CanReachNodeAsync(p);
+            _logger.LogDebug("Peer {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+            return !reachable;
+        });
+
+        if (removed)
+        {
+            RemoveConnection(nodeId);
+        }
     }
+
 
     public override async Task SendAsync(NodeInfo target, Message message)
     {
@@ -5970,6 +6317,11 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
             conn.Dispose();
             _logger.LogInformation("Removed outbound connection to {NodeId}", nodeId);
         }
+    }
+
+    public override Task SendAsync(NodeInfo target, byte[] data)
+    {
+        throw new NotImplementedException();
     }
 }
 
@@ -6409,7 +6761,7 @@ namespace Clustron.Core.Cluster.Behaviors
                     DurationSeconds = Convert.ToInt32(PollInterval.TotalSeconds) // or any other duration you'd like
                 };
 
-                var request = MessageBuilder.Create(_self.NodeId, MessageTypes.RequestMetrics, correlationId, requestPayload);
+                var request = MessageBuilder.Create<MetricsRequest>(_self.NodeId, MessageTypes.RequestMetrics, correlationId, requestPayload);
 
                 try
                 {
@@ -6439,27 +6791,71 @@ namespace Clustron.Core.Cluster.Behaviors
                 list.RemoveAll(s => s.TimestampUtc < now - RetentionDuration);
             }
 
-            // Safely extract totals
-            snapshot.Totals.TryGetValue(MetricKeys.Messages.Sent, out var totalSent);
-            snapshot.Totals.TryGetValue(MetricKeys.Messages.Received, out var totalRecv);
+            // Extract totals
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Sent, out var totalDirectSent);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Broadcasted, out var totalDirectBroadcasted);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Received, out var totalDirectReceived);
+
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Events.Published, out var totalEventsPublished);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Events.Delivered, out var totalEventsReceived);
+
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Wire.Sent, out var totalSent);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Wire.Received, out var totalRecv);
+
             snapshot.Totals.TryGetValue(MetricKeys.Heartbeat.Sent, out var totalHbSent);
             snapshot.Totals.TryGetValue(MetricKeys.Heartbeat.Received, out var totalHbRecv);
 
-            // Safely extract per-second rates
-            snapshot.PerSecondRates.TryGetValue(MetricKeys.Messages.Sent, out var sentRates);
-            snapshot.PerSecondRates.TryGetValue(MetricKeys.Messages.Received, out var recvRates);
+            // Extract per-second rates
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Sent, out var directSentRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Broadcasted, out var directBroadcastedRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Received, out var directReceivedRates);
+
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Events.Published, out var eventsPublishedRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Events.Delivered, out var eventsReceivedRates);
+
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Wire.Sent, out var sentRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Wire.Received, out var recvRates);
+
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Sent, out var hbSentRates);
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Received, out var hbRecvRates);
 
             _logger.LogCritical(
-                "Received metrics from {NodeId}: MsgSent={TotalSent} {SentRates}, MsgRecv={TotalRecv} {RecvRates}, HB Recv={HbRecv} {HbRecvRates}, HB Sent={HbSent} {HbSentRates}",
+                @"Received metrics from {NodeId}:
+
+--- Direct Messages ---
+  Sent:       {DirectSent}     Rate: {DirectSentRate}
+  Broadcasted:{DirectBroadcasted} Rate: {DirectBroadcastedRate}
+  Received:   {DirectReceived} Rate: {DirectReceivedRate}
+
+--- Events ---
+  Published:  {EventsPublished} Rate: {EventsPublishedRate}
+  Delivered:  {EventsReceived} Rate: {EventsReceivedRate}
+
+--- Wire Messages ---
+  Sent:       {TotalSent}      Rate: {SentRate}
+  Received:   {TotalRecv}      Rate: {RecvRate}
+
+--- Heartbeats ---
+  Sent:       {HbSent}         Rate: {HbSentRate}
+  Received:   {HbRecv}         Rate: {HbRecvRate}
+",
                 snapshot.NodeId,
+
+                totalDirectSent, FormatRates(directSentRates ?? Array.Empty<int>()),
+                totalDirectBroadcasted, FormatRates(directBroadcastedRates ?? Array.Empty<int>()),
+                totalDirectReceived, FormatRates(directReceivedRates ?? Array.Empty<int>()),
+
+                totalEventsPublished, FormatRates(eventsPublishedRates ?? Array.Empty<int>()),
+                totalEventsReceived, FormatRates(eventsReceivedRates ?? Array.Empty<int>()),
+
                 totalSent, FormatRates(sentRates ?? Array.Empty<int>()),
                 totalRecv, FormatRates(recvRates ?? Array.Empty<int>()),
-                totalHbRecv, FormatRates(hbRecvRates ?? Array.Empty<int>()),
-                totalHbSent, FormatRates(hbSentRates ?? Array.Empty<int>())
+
+                totalHbSent, FormatRates(hbSentRates ?? Array.Empty<int>()),
+                totalHbRecv, FormatRates(hbRecvRates ?? Array.Empty<int>())
             );
         }
+
 
 
         private static string FormatRates(int[] rates)
@@ -6560,7 +6956,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2ae416f9d5e65eddb189fd5398116654dff5631a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+739d6903e4442872262064dd6ce2da227dac7258")]
 [assembly: System.Reflection.AssemblyProductAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

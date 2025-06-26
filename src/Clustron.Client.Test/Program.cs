@@ -9,10 +9,12 @@
 using Clustron.Client;
 using Clustron.Client.Models;
 using Clustron.Client.Test;
+using Clustron.Core.Configuration;
 using Clustron.Core.Events;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Reflection;
 
 //// ✅ Pass command-line args to host builder
 //var host = Host.CreateDefaultBuilder(args)
@@ -39,82 +41,128 @@ using Microsoft.Extensions.Hosting;
 var client = Clustron.Client.Clustron.Initialize("clustron-alpha", args);
 
 //await SendAndReceiveItems(client);
-await PubSubMessages(client);
+if (client.Management.Self.Roles.Contains(ClustronRoles.Member))
+    await PubSubMessages(client);
 
-static async Task SendAndReceiveItems(IClustronClient client)
-{
-    // ✅ Register a message handler
-    client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
+else
+    await Task.Delay(Timeout.Infinite);
+
+    static async Task SendAndReceiveItems(IClustronClient client)
     {
-        Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
-        return Task.CompletedTask;
-    });
-
-    Console.WriteLine("Client started. Press any key to start sending messages...");
-    Console.ReadLine();
-
-    var random = new Random();
-    long messageCount = 0;
-    while (true)
-    {
-        // Simulate a 100-byte payload
-        var customer = new Customer
+        // ✅ Register a message handler
+        client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
         {
-            Id = random.Next(100, 999),
-            Name = new string('X', 96) // Assuming 'Id' is 4 bytes, pad name to make total ~100 bytes
-        };
-        try
-        {
-            await client.Messaging.BroadcastAsync(customer);
-        }
-        catch (NotSupportedException ex)
-        {
-            Console.WriteLine(ex.Message);
-            break;
-        }
-        messageCount++;
-        if (messageCount % 100 == 0)
-            Console.WriteLine($"Total broadcasted messages {messageCount}");
+            if (customer.Id % 5000 == 0)
+                Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
+            return Task.CompletedTask;
+        });
 
-        await Task.Delay(TimeSpan.FromSeconds(5));
-    }
-
-    Console.WriteLine("Press CTRL+C to stop");
-    while (true)
-    {
+        Console.WriteLine("Client started. Press any key to start sending messages...");
         Console.ReadLine();
+
+        var random = new Random();
+        long messageCount = 0;
+        while (true)
+        {
+            // Simulate a 100-byte payload
+            var customer = new Customer
+            {
+                Id = random.Next(100, 999),
+                Name = new string('X', 96) // Assuming 'Id' is 4 bytes, pad name to make total ~100 bytes
+            };
+            try
+            {
+                await client.Messaging.BroadcastAsync(customer);
+            }
+            catch (NotSupportedException ex)
+            {
+                Console.WriteLine(ex.Message);
+                break;
+            }
+            messageCount++;
+            if (messageCount % 100 == 0)
+                Console.WriteLine($"Total broadcasted messages {messageCount}");
+
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+
+        Console.WriteLine("Press CTRL+C to stop");
+        while (true)
+        {
+            Console.ReadLine();
+        }
     }
-}
 
 static async Task PubSubMessages(IClustronClient client)
 {
-    //Console.WriteLine("Press Enter to continue...");
-    //Console.ReadLine();
+    const int TotalMessagesToSend = 100000;
 
+    var selfId = client.Management.Self.NodeId;
+    var receivedCounts = new Dictionary<string, int>();
+    var lockObj = new object();
+    var receivedTotal = 0;
+
+    // Subscribe to cluster event
     client.Messaging.Subscribe<CustomClusterEvent<Customer>, Customer>(async evt =>
     {
-        //Console.WriteLine($"[ClusterEvent] User logged in: {evt.Payload.Name} from {evt.Publisher}");
+        lock (lockObj)
+        {
+            if (!receivedCounts.ContainsKey(evt.Publisher))
+                receivedCounts[evt.Publisher] = 0;
+
+            receivedCounts[evt.Publisher]++;
+            receivedTotal++;
+        }
+
+        if (evt.Payload.Id % 500 == 0)
+            Console.WriteLine($"[RECV] {evt.Payload.Name} from {evt.Publisher}");
+
         await Task.CompletedTask;
     });
 
-    Console.WriteLine("Enter to send messages...");
-    Console.ReadLine();
+    Console.WriteLine("Waiting for the cluster to stabalize...");
 
-    int index = 1;
-    while (true)
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    Console.WriteLine("Test is running now...");
+
+    // Send messages
+    for (int i = 1; i <= TotalMessagesToSend; i++)
     {
-        
-        var payload = new Customer
+        var customer = new Customer
         {
-            Name = "alice" + index,
-            Id = index++
+            Name = $"user-{selfId}-{i}",
+            Id = i
         };
 
-        var evt = new CustomClusterEvent<Customer>(payload);
-        evt.Publisher = client.Management.Self.NodeId;
+        var evt = new CustomClusterEvent<Customer>(customer)
+        {
+            Publisher = selfId
+        };
+
         await client.Messaging.PublishAsync(evt);
 
-        //await Task.Delay(TimeSpan.FromSeconds(1));
+        if (i % 100 == 0)
+            Console.WriteLine($"[{selfId}] Sent {i} messages");
+
+        await Task.Delay(1); // small delay to avoid flooding
     }
+
+    Console.WriteLine($"[{selfId}] Done sending. Waiting for all messages to arrive...");
+    await Task.Delay(TimeSpan.FromSeconds(10));
+
+    // Print summary
+    Console.WriteLine($"\n[{selfId}] Message Receipt Summary:");
+    lock (lockObj)
+    {
+        foreach (var kvp in receivedCounts.OrderBy(k => k.Key))
+            Console.WriteLine($"  Received {kvp.Value} messages from {kvp.Key}");
+
+        Console.WriteLine($"\n  Total received: {receivedTotal}");
+        Console.WriteLine($"  Expected (approx): [Number of nodes] × {TotalMessagesToSend}");
+    }
+    await Task.Delay(TimeSpan.FromSeconds(5));
+    //Console.WriteLine("Press CTRL+C to exit.");
+    await Task.Delay(Timeout.Infinite);
 }
+
 

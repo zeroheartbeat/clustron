@@ -47,7 +47,7 @@ public class TransportFactory : ITransportFactory
     public ITransport Create()
     {
         ITransport transport = _config.UseDuplexConnections
-            ? new DuplexTcpTransport(_config.Port, _clusterRuntime, _serializer, _metricContributor, _loggerProvider, _config.RetryOptions)
+            ? new PipelinedTcpTransport(_config.Port, _clusterRuntime, _serializer, _metricContributor, _loggerProvider, _config.RetryOptions)
             : new UnidirectionalTcpTransport(_config.Port, _clusterRuntime, _serializer, _loggerProvider);
 
         _communication.OverrideTransport(transport); // important for ClusterContext transport access

@@ -43,15 +43,27 @@ public abstract class BaseTcpTransport : ITransport
 
     public abstract Task StartAsync(IMessageRouter router);
     public abstract Task SendAsync(NodeInfo target, Message message);
+
+    public abstract Task SendAsync(NodeInfo target, byte[] data);
     public abstract void RemoveConnection(string nodeId);
     public abstract Task<bool> CanReachNodeAsync(NodeInfo node);
 
     public virtual async Task BroadcastAsync(Message message, params string[] roles)
     {
-        var peers = _peerManager.GetPeersWithRole(roles)
-                        .Where(p => p.NodeId != message.SenderId);
+        var peers = _peerManager.GetPeersWithRole(roles);
+        var body = _serializer.Serialize(message);
 
-        await Task.WhenAll(peers.Select(p => SendAsync(p, message)));
+        var tasks = new List<Task>();
+
+        foreach (var peer in peers)
+        {
+            if (peer.NodeId == message.SenderId)
+                continue;
+
+            tasks.Add(SendSafeAsync(peer, body));
+        }
+
+        await Task.WhenAll(tasks);
     }
 
     public virtual Task<Message> WaitForResponseAsync(string expectedSenderId, string correlationId, TimeSpan timeout)
@@ -87,7 +99,19 @@ public abstract class BaseTcpTransport : ITransport
         }
     }
 
-    void CleanupIdleConnections(TimeSpan idleTimeout)
+    private async Task SendSafeAsync(NodeInfo peer, byte[] data)
+    {
+        try
+        {
+            await SendAsync(peer, data);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Failed to send broadcast to {NodeId}: {Message}", peer.NodeId, ex.Message);
+        }
+    }
+
+    private void CleanupIdleConnections(TimeSpan idleTimeout)
     {
         foreach (var conn in _connections)
         {

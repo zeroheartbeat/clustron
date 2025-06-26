@@ -80,7 +80,7 @@ namespace Clustron.Core.Cluster.Behaviors
                     DurationSeconds = Convert.ToInt32(PollInterval.TotalSeconds) // or any other duration you'd like
                 };
 
-                var request = MessageBuilder.Create(_self.NodeId, MessageTypes.RequestMetrics, correlationId, requestPayload);
+                var request = MessageBuilder.Create<MetricsRequest>(_self.NodeId, MessageTypes.RequestMetrics, correlationId, requestPayload);
 
                 try
                 {
@@ -110,27 +110,71 @@ namespace Clustron.Core.Cluster.Behaviors
                 list.RemoveAll(s => s.TimestampUtc < now - RetentionDuration);
             }
 
-            // Safely extract totals
-            snapshot.Totals.TryGetValue(MetricKeys.Messages.Sent, out var totalSent);
-            snapshot.Totals.TryGetValue(MetricKeys.Messages.Received, out var totalRecv);
+            // Extract totals
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Sent, out var totalDirectSent);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Broadcasted, out var totalDirectBroadcasted);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Direct.Received, out var totalDirectReceived);
+
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Events.Published, out var totalEventsPublished);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Events.Delivered, out var totalEventsReceived);
+
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Wire.Sent, out var totalSent);
+            snapshot.Totals.TryGetValue(MetricKeys.Msg.Wire.Received, out var totalRecv);
+
             snapshot.Totals.TryGetValue(MetricKeys.Heartbeat.Sent, out var totalHbSent);
             snapshot.Totals.TryGetValue(MetricKeys.Heartbeat.Received, out var totalHbRecv);
 
-            // Safely extract per-second rates
-            snapshot.PerSecondRates.TryGetValue(MetricKeys.Messages.Sent, out var sentRates);
-            snapshot.PerSecondRates.TryGetValue(MetricKeys.Messages.Received, out var recvRates);
+            // Extract per-second rates
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Sent, out var directSentRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Broadcasted, out var directBroadcastedRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Direct.Received, out var directReceivedRates);
+
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Events.Published, out var eventsPublishedRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Events.Delivered, out var eventsReceivedRates);
+
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Wire.Sent, out var sentRates);
+            snapshot.PerSecondRates.TryGetValue(MetricKeys.Msg.Wire.Received, out var recvRates);
+
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Sent, out var hbSentRates);
             snapshot.PerSecondRates.TryGetValue(MetricKeys.Heartbeat.Received, out var hbRecvRates);
 
             _logger.LogCritical(
-                "Received metrics from {NodeId}: MsgSent={TotalSent} {SentRates}, MsgRecv={TotalRecv} {RecvRates}, HB Recv={HbRecv} {HbRecvRates}, HB Sent={HbSent} {HbSentRates}",
+                @"Received metrics from {NodeId}:
+
+--- Direct Messages ---
+  Sent:       {DirectSent}     Rate: {DirectSentRate}
+  Broadcasted:{DirectBroadcasted} Rate: {DirectBroadcastedRate}
+  Received:   {DirectReceived} Rate: {DirectReceivedRate}
+
+--- Events ---
+  Published:  {EventsPublished} Rate: {EventsPublishedRate}
+  Delivered:  {EventsReceived} Rate: {EventsReceivedRate}
+
+--- Wire Messages ---
+  Sent:       {TotalSent}      Rate: {SentRate}
+  Received:   {TotalRecv}      Rate: {RecvRate}
+
+--- Heartbeats ---
+  Sent:       {HbSent}         Rate: {HbSentRate}
+  Received:   {HbRecv}         Rate: {HbRecvRate}
+",
                 snapshot.NodeId,
+
+                totalDirectSent, FormatRates(directSentRates ?? Array.Empty<int>()),
+                totalDirectBroadcasted, FormatRates(directBroadcastedRates ?? Array.Empty<int>()),
+                totalDirectReceived, FormatRates(directReceivedRates ?? Array.Empty<int>()),
+
+                totalEventsPublished, FormatRates(eventsPublishedRates ?? Array.Empty<int>()),
+                totalEventsReceived, FormatRates(eventsReceivedRates ?? Array.Empty<int>()),
+
                 totalSent, FormatRates(sentRates ?? Array.Empty<int>()),
                 totalRecv, FormatRates(recvRates ?? Array.Empty<int>()),
-                totalHbRecv, FormatRates(hbRecvRates ?? Array.Empty<int>()),
-                totalHbSent, FormatRates(hbSentRates ?? Array.Empty<int>())
+
+                totalHbSent, FormatRates(hbSentRates ?? Array.Empty<int>()),
+                totalHbRecv, FormatRates(hbRecvRates ?? Array.Empty<int>())
             );
         }
+
 
 
         private static string FormatRates(int[] rates)

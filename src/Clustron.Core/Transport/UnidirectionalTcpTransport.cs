@@ -248,5 +248,10 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
             _logger.LogInformation("Removed outbound connection to {NodeId}", nodeId);
         }
     }
+
+    public override Task SendAsync(NodeInfo target, byte[] data)
+    {
+        throw new NotImplementedException();
+    }
 }
 

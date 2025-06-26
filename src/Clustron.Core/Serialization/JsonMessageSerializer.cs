@@ -40,7 +40,9 @@ namespace Clustron.Core.Serialization
 
         public object Deserialize(byte[] data, Type type) =>
             JsonSerializer.Deserialize(data, type)!;
-    }
 
+        public T Deserialize<T>(ReadOnlySpan<byte> data) =>
+            JsonSerializer.Deserialize<T>(data, _options)!;
+    }
 }
 

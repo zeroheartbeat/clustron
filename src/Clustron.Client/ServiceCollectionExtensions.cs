@@ -12,6 +12,7 @@ using Clustron.Client.Models;
 using Clustron.Core.Client;
 using Clustron.Core.Cluster;
 using Clustron.Core.Messaging;
+using Clustron.Core.Observability;
 using Clustron.Core.Serialization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,7 +36,9 @@ public static class ServiceCollectionExtensions
         {
             var controller = sp.GetRequiredService<ClusterNodeControllerBase>();
             var serializer = sp.GetRequiredService<IMessageSerializer>();
-            return new ClustronClientCore(controller, serializer);
+            var metricsContributor = sp.GetRequiredService<IMetricContributor>();
+
+            return new ClustronClientCore(controller, metricsContributor,serializer);
         });
 
         // Register the main public-facing interface

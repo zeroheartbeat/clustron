@@ -1,4 +1,11 @@
-﻿using Clustron.Core.Events;
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+using Clustron.Core.Events;
 using Clustron.Core.Models;
 using Microsoft.Extensions.Logging;
 using System;
@@ -45,9 +52,9 @@ namespace Clustron.Core.Cluster
         // --- PEER REMOVAL (With Optional Vetting) ---
         public async Task<bool> TryRemovePeerAsync(NodeInfo peer, Func<NodeInfo, Task<bool>>? vettingCallback = null)
         {
-            if (!_registry.Contains(peer.NodeId))
+            if (!_registry.IsAlive(peer.NodeId))
             {
-                _logger.LogDebug("Peer {NodeId} not found in registry", peer.NodeId);
+                _logger.LogDebug("Peer {NodeId} not found in active peers", peer.NodeId);
                 return false;
             }
 
@@ -91,7 +98,7 @@ namespace Clustron.Core.Cluster
                 if (epoch == _currentEpoch)
                     return false;
 
-                _logger.LogInformation("Updating epoch for leader {LeaderId}: {OldEpoch} → {NewEpoch}", leader.NodeId, _currentEpoch, epoch);
+                _logger.LogInformation("Updating epoch for leader {LeaderId}: {OldEpoch} ? {NewEpoch}", leader.NodeId, _currentEpoch, epoch);
                 _currentEpoch = epoch;
                 return true;
             }

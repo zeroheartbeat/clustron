@@ -46,8 +46,9 @@ public class RollingCounter
         for (int i = 0; i < elapsedSeconds; i++)
         {
             _index = (_index + 1) % _windowSize;
-            _buffer[_index] = (i == 0) ? _currentSecondCount : 0;
+            _buffer[_index] = 0;
         }
+        _buffer[_index] = _currentSecondCount;
 
         _lastSecond = _lastSecond.AddSeconds(elapsedSeconds);
         _currentSecondCount = 0;

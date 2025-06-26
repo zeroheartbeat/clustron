@@ -19,6 +19,7 @@ using Microsoft.Extensions.Logging;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 
@@ -78,68 +79,109 @@ public class DuplexTcpTransport : BaseTcpTransport
     }
 
 
+    //private async Task HandleClientAsync(TcpClient client, IMessageRouter router)
+    //{
+    //    using var stream = client.GetStream();
+    //    string? senderId = null;
+
+    //    try
+    //    {
+    //        while (true)
+    //        {
+    //            var lengthBuffer = ArrayPool<byte>.Shared.Rent(4);
+    //            try
+    //            {
+    //                await ReadExactlyAsync(stream, lengthBuffer, 0, 4);
+
+    //                int length = BitConverter.ToInt32(lengthBuffer, 0);
+    //                if (length <= 0 || length > 1024 * 10)
+    //                {
+    //                    _logger.LogCritical("HandleClientAsync: Invalid message length received: {Length}", length);
+    //                    break;
+    //                }
+
+    //                var payloadBuffer = ArrayPool<byte>.Shared.Rent(length);
+    //                try
+    //                {
+    //                    await ReadExactlyAsync(stream, payloadBuffer, 0, length);
+    //                    var message = _serializer.Deserialize<Message>(payloadBuffer.AsSpan(0, length));
+
+    //                    if (message == null) continue;
+
+    //                    senderId = message.SenderId;
+
+    //                    if (!string.IsNullOrEmpty(message.CorrelationId) &&
+    //                        _responseAwaiters.TryGetValue(message.CorrelationId, out var tcs))
+    //                    {
+    //                        tcs.TrySetResult(message);
+    //                        _responseAwaiters.TryRemove(message.CorrelationId, out _);
+    //                    }
+    //                    else
+    //                    {
+    //                        if(message.MessageType == MessageTypes.NodeLeft)
+    //                            _logger.LogCritical("Something unexpected happened. CorrelationId: {CorrelationId} for message {message}", message.CorrelationId, message.ToString());
+    //                        await router.RouteAsync(message);
+    //                    }
+    //                }
+    //                finally
+    //                {
+    //                    ArrayPool<byte>.Shared.Return(payloadBuffer);
+    //                }
+    //            }
+    //            finally
+    //            {
+    //                ArrayPool<byte>.Shared.Return(lengthBuffer);
+    //            }
+    //        }
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        _logger.LogCritical("Inbound connection failed: {Error}", ex.ToString());
+    //    }
+    //    finally
+    //    {
+    //        if (!string.IsNullOrEmpty(senderId))
+    //        {
+    //            await HandlePeerDownAsync(senderId); // triggers proper peer removal
+    //        }
+
+    //        client.Close();
+    //    }
+    //}
+
     private async Task HandleClientAsync(TcpClient client, IMessageRouter router)
     {
         using var stream = client.GetStream();
+        var reader = PipeReader.Create(stream);
         string? senderId = null;
 
         try
         {
             while (true)
             {
-                var lengthBuffer = ArrayPool<byte>.Shared.Rent(4);
-                try
+                var result = await reader.ReadAsync();
+                var buffer = result.Buffer;
+
+                while (TryReadMessage(ref buffer, out var message))
                 {
-                    int read = await stream.ReadAsync(lengthBuffer, 0, 4);
-                    if (read == 0)
-                    {
-                        _logger.LogError("HandleClientAsync: Stream read returned 0. Remote: {RemoteEndPoint}, Local: {LocalEndPoint}",
-                            ((IPEndPoint)client.Client.RemoteEndPoint)?.ToString(),
-                            ((IPEndPoint)client.Client.LocalEndPoint)?.ToString());
+                    senderId = message.SenderId;
 
-                        break;
+                    if (!string.IsNullOrEmpty(message.CorrelationId) &&
+                        _responseAwaiters.TryRemove(message.CorrelationId, out var tcs))
+                    {
+                        tcs.TrySetResult(message);
                     }
-
-                    int length = BitConverter.ToInt32(lengthBuffer, 0);
-                    if (length <= 0 || length > 1024 * 10)
+                    else
                     {
-                        _logger.LogCritical("HandleClientAsync: Invalid message length received: {Length}", length);
-                        break;
-                    }
-
-                    var payloadBuffer = ArrayPool<byte>.Shared.Rent(length);
-                    try
-                    {
-                        await ReadExactlyAsync(stream, payloadBuffer, 0, length);
-                        var payload = payloadBuffer.AsSpan(0, length).ToArray();
-                        var message = _serializer.Deserialize<Message>(payload);
-
-                        if (message == null) continue;
-
-                        senderId = message.SenderId;
-
-                        if (!string.IsNullOrEmpty(message.CorrelationId) &&
-                            _responseAwaiters.TryGetValue(message.CorrelationId, out var tcs))
-                        {
-                            tcs.TrySetResult(message);
-                            _responseAwaiters.TryRemove(message.CorrelationId, out _);
-                        }
-                        else
-                        {
-                            if(message.MessageType == MessageTypes.NodeLeft)
-                                _logger.LogCritical("Something unexpected happened. CorrelationId: {CorrelationId} for message {message}", message.CorrelationId, message.ToString());
-                            await router.RouteAsync(message);
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(payloadBuffer);
+                        await router.RouteAsync(message);
+                        _metrics.Increment(MetricKeys.Msg.Wire.Received);
                     }
                 }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(lengthBuffer);
-                }
+
+                reader.AdvanceTo(buffer.Start, buffer.End);
+
+                if (result.IsCompleted)
+                    break;
             }
         }
         catch (Exception ex)
@@ -149,21 +191,27 @@ public class DuplexTcpTransport : BaseTcpTransport
         finally
         {
             if (!string.IsNullOrEmpty(senderId))
-            {
-                await HandlePeerDownAsync(senderId); // triggers proper peer removal
-            }
+                await HandlePeerDownAsync(senderId);
 
             client.Close();
         }
     }
 
+    
     public override async Task SendAsync(NodeInfo target, Message message)
     {
         var body = _serializer.Serialize(message);
-        var length = BitConverter.GetBytes(body.Length);
+        await SendAsync(target, body);
+
+    }
+
+    public override async Task SendAsync(NodeInfo target, byte[] data)
+    {
+        var length = BitConverter.GetBytes(data.Length);
 
         var sendLock = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
         await sendLock.WaitAsync();
+
         try
         {
             await RetryHelper.RetryAsync(async () =>
@@ -175,11 +223,22 @@ public class DuplexTcpTransport : BaseTcpTransport
                 conn.LastUsedUtc = DateTime.UtcNow;
                 var stream = conn.Stream;
 
-                await stream.WriteAsync(length, 0, length.Length);
-                await stream.WriteAsync(body, 0, body.Length);
+                // ✅ Use a single buffer to reduce syscalls
+                var buffer = ArrayPool<byte>.Shared.Rent(length.Length + data.Length);
+                try
+                {
+                    Buffer.BlockCopy(length, 0, buffer, 0, length.Length);
+                    Buffer.BlockCopy(data, 0, buffer, length.Length, data.Length);
+
+                    await stream.WriteAsync(buffer.AsMemory(0, length.Length + data.Length));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
             }, _retryOptions.MaxAttempts, _retryOptions.DelayMilliseconds, _logger);
 
-            _metrics.Increment(MetricKeys.Messages.Sent);
+            _metrics.Increment(MetricKeys.Msg.Wire.Sent);
         }
         catch (Exception ex)
         {
@@ -191,6 +250,32 @@ public class DuplexTcpTransport : BaseTcpTransport
         {
             sendLock.Release();
         }
+    }
+
+    private bool TryReadMessage(ref ReadOnlySequence<byte> buffer, out Message? message)
+    {
+        message = null;
+
+        var reader = new SequenceReader<byte>(buffer);
+        if (!reader.TryReadLittleEndian(out int length))
+            return false;
+
+        if (reader.Remaining < length)
+            return false;
+
+        var payload = buffer.Slice(reader.Position, length);
+
+        try
+        {
+            message = _serializer.Deserialize<Message>(payload.ToArray()); // Optimize: use Span-based overload if available
+        }
+        catch
+        {
+            return false;
+        }
+
+        buffer = buffer.Slice(reader.Position).Slice(length);
+        return true;
     }
 
     private async Task<PersistentConnection?> GetOrCreateConnectionAsync(NodeInfo target)

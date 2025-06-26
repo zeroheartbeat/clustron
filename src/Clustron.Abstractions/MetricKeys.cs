@@ -16,10 +16,26 @@ namespace Clustron.Abstractions;
 
 public static class MetricKeys
 {
-    public static class Messages
+    public static class Msg
     {
-        public const string Sent = "messages.sent";
-        public const string Received = "messages.received";
+        public static class Direct
+        {
+            public const string Sent = "msg.direct.sent";
+            public const string Broadcasted = "msg.direct.broadcasted";
+            public const string Received = "msg.direct.received";
+        }
+
+        public static class Events
+        {
+            public const string Published = "msg.publish.sent";
+            public const string Delivered = "msg.publish.received";
+        }
+
+        public static class Wire
+        {
+            public const string Sent = "msg.wire.sent";
+            public const string Received = "msg.wire.received";
+        }
     }
 
     public static class Heartbeat
