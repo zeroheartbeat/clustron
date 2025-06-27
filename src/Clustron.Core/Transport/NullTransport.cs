@@ -52,5 +52,10 @@ public class NullTransport : ITransport
     {
         throw new NotImplementedException();
     }
+
+    public Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        throw new NotImplementedException();
+    }
 }
 

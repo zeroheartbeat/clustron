@@ -8,6 +8,7 @@
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Extensions;
 using Clustron.Core.Handshake;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
@@ -48,6 +49,9 @@ public class ClusterViewHandler : IMessageHandler
         foreach (var peer in payload.KnownPeers)
         {
             if (peer.NodeId == _runtime.Self.NodeId)
+                continue;
+
+            if (!peer.IsMember())
                 continue;
 
             if (!_runtime.PeerManager.IsPeerKnown(peer.NodeId))

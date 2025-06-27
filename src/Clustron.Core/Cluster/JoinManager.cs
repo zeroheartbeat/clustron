@@ -38,68 +38,79 @@ namespace Clustron.Core.Cluster;
             _logger = loggerProvider.GetLogger<JoinManager>();
         }
 
-        public async Task<JoinResult> JoinClusterAsync(NodeInfo self)
+    public async Task<JoinResult> JoinClusterAsync(NodeInfo self)
+    {
+        _logger.LogInformation("Registering self to discovery...");
+        await _clusterDiscovery.DiscoveryProvider.RegisterSelfAsync(self);
+
+        _logger.LogInformation("Discovering peer nodes...");
+        var discoveredPeers = (await _clusterDiscovery.DiscoveryProvider.DiscoverNodesAsync())
+            .ExcludeSelf(self.NodeId)
+            .ToList();
+
+        _logger.LogInformation("Discovered peers: {Peers}", string.Join(", ", discoveredPeers.Select(p => $"{p.NodeId} ({p.Host}:{p.Port})")));
+        _logger.LogInformation("Discovered {Count} peers: {Peers}",
+            discoveredPeers.Count,
+            string.Join(", ", discoveredPeers.Select(p => p.NodeId)));
+
+        var acceptedPeers = new List<NodeInfo>();
+        NodeInfo? knownLeader = null;
+        int highestEpoch = 0;
+
+        var handshakeTasks = discoveredPeers.Select(async peer =>
         {
-            _logger.LogInformation("Registering self to discovery...");
-            await _clusterDiscovery.DiscoveryProvider.RegisterSelfAsync(self);
-
-            _logger.LogInformation("Discovering peer nodes...");
-            var discoveredPeers = (await _clusterDiscovery.DiscoveryProvider.DiscoverNodesAsync()).ExcludeSelf(self.NodeId).ToList();
-
-            _logger.LogInformation("Discovered peers: {Peers}", string.Join(", ", discoveredPeers.Select(p => $"{p.NodeId} ({p.Host}:{p.Port})")));
-
-            _logger.LogInformation("Discovered {Count} peers: {Peers}",
-                discoveredPeers.Count,
-                string.Join(", ", discoveredPeers.Select(p => p.NodeId)));
-
-            var acceptedPeers = new List<NodeInfo>();
-            NodeInfo? knownLeader = null;
-            int highestEpoch = 0;
-
-            foreach (var peer in discoveredPeers)
+            try
             {
-                try
+                _logger.LogDebug("Attempting handshake with {Peer}", peer.NodeId);
+                var result = await RetryHelper.RetryAsync(
+                    () => _handshakeProtocol.InitiateHandshakeAsync(peer),
+                    _config.RetryOptions.MaxAttempts,
+                    _config.RetryOptions.DelayMilliseconds,
+                    _logger);
+
+                _logger.LogDebug("Handshake result from {Peer}: Accepted={Accepted}, Leader={Leader}",
+                    peer.NodeId,
+                    result.Accepted,
+                    result.Leader?.NodeId ?? "none");
+
+                return (Peer: peer, Result: result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Failed to handshake with {Peer}: {Error}", peer.NodeId, ex.Message);
+                return (Peer: peer, Result: (null as HandshakeResponse));
+            }
+        }).ToList();
+
+        var results = await Task.WhenAll(handshakeTasks);
+
+        foreach (var (peer, result) in results)
+        {
+            if (result == null)
+                continue;
+
+            if (result.Accepted)
+            {
+                _logger.LogInformation("Handshake successful with {Peer}", peer.NodeId);
+
+                _peerManager.RegisterPeer(result.ResponderNode);
+                acceptedPeers.Add(result.ResponderNode);
+
+                if (result.Leader != null && result.LeaderEpoch > highestEpoch)
                 {
-                    _logger.LogDebug("Attempting handshake with {Peer}", peer.NodeId);
-                    var result = await RetryHelper.RetryAsync(
-                            () => _handshakeProtocol.InitiateHandshakeAsync(peer),
-                            _config.RetryOptions.MaxAttempts,
-                            _config.RetryOptions.DelayMilliseconds,
-                            _logger);
-
-                    _logger.LogDebug("Handshake result from {Peer}: Accepted={Accepted}, Leader={Leader}",
-                        peer.NodeId,
-                        result.Accepted,
-                        result.Leader?.NodeId ?? "none");
-
-
-                    if (result.Accepted)
-                    {
-                        _logger.LogInformation("Handshake successful with {Peer}", peer.NodeId);
-
-                        _peerManager.RegisterPeer(result.ResponderNode); 
-
-                        acceptedPeers.Add(result.ResponderNode);
-
-                        if (result.Leader != null && result.LeaderEpoch > highestEpoch)
-                        {
-                            knownLeader = result.Leader;
-                            highestEpoch = result.LeaderEpoch;
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Handshake rejected by {Peer}: {Reason}", peer.NodeId, result.Reason);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning("Failed to handshake with {Peer}: {Error}", peer.NodeId, ex.Message);
+                    knownLeader = result.Leader;
+                    highestEpoch = result.LeaderEpoch;
                 }
             }
-
-            _logger.LogInformation("Total accepted peers after join: {Count}", acceptedPeers.Count);
-            return new JoinResult(acceptedPeers, knownLeader, highestEpoch);
+            else
+            {
+                _logger.LogWarning("Handshake rejected by {Peer}: {Reason}", peer.NodeId, result.Reason);
+            }
         }
+
+        _logger.LogInformation("Total accepted peers after join: {Count}", acceptedPeers.Count);
+        return new JoinResult(acceptedPeers, knownLeader, highestEpoch);
     }
+
+}
 

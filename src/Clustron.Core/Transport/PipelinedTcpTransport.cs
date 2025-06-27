@@ -1,10 +1,11 @@
-// Copyright (c) 2025 zeroheartbeat
+﻿// Copyright (c) 2025 zeroheartbeat
 //
 // Use of this software is governed by the Business Source License 1.1,
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
+
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -28,6 +29,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
     private readonly int _port;
     private TcpListener? _listener;
     private readonly ConcurrentDictionary<string, Channel<byte[]>> _outgoingChannels = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sendLocks = new();
     private readonly ILogger _logger;
     private readonly IMetricContributor _metrics;
     private readonly RetryOptions _retryOptions;
@@ -133,25 +135,58 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
     public override async Task SendAsync(NodeInfo target, byte[] data)
     {
-        var channel = _outgoingChannels.GetOrAdd(target.NodeId, key =>
-        {
-            var ch = Channel.CreateUnbounded<byte[]>();
-            _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
-            return ch;
-        });
+        var channel = GetOrCreateValidChannel(target);
 
-        // Fast path
         if (!channel.Writer.TryWrite(data))
-            await channel.Writer.WriteAsync(data);
+        {
+            try
+            {
+                await channel.Writer.WriteAsync(data);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "WriteAsync failed to {NodeId}", target.NodeId);
+                _outgoingChannels.TryRemove(target.NodeId, out _);
+            }
+        }
+    }
+
+    private Channel<byte[]> GetOrCreateValidChannel(NodeInfo target)
+    {
+        while (true)
+        {
+            if (_outgoingChannels.TryGetValue(target.NodeId, out var existing))
+            {
+                if (!existing.Reader.Completion.IsCompleted)
+                    return existing;
+
+                _outgoingChannels.TryRemove(target.NodeId, out _);
+            }
+
+            var newChannel = CreateChannel(target);
+            if (_outgoingChannels.TryAdd(target.NodeId, newChannel))
+                return newChannel;
+        }
+    }
+
+    private Channel<byte[]> CreateChannel(NodeInfo target)
+    {
+        var ch = Channel.CreateUnbounded<byte[]>();
+        _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
+        return ch;
     }
 
     private async Task ProcessSendQueue(NodeInfo target, ChannelReader<byte[]> reader)
     {
         PersistentConnection? conn = null;
+        var lockObj = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
+
         while (await reader.WaitToReadAsync())
         {
             while (reader.TryRead(out var data))
             {
+                await lockObj.WaitAsync();
+
                 try
                 {
                     await RetryHelper.RetryAsync(async () =>
@@ -173,7 +208,6 @@ public class PipelinedTcpTransport : BaseTcpTransport
                         {
                             BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
                             Buffer.BlockCopy(data, 0, buffer, 4, data.Length);
-
                             await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
                             conn.LastUsedUtc = DateTime.UtcNow;
                         }
@@ -192,6 +226,10 @@ public class PipelinedTcpTransport : BaseTcpTransport
                     _connections.TryRemove(target.NodeId, out _);
                     conn = null;
                     await Task.Delay(100);
+                }
+                finally
+                {
+                    lockObj.Release();
                 }
             }
         }
@@ -224,6 +262,49 @@ public class PipelinedTcpTransport : BaseTcpTransport
         }
     }
 
+    public async override Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        var data = _serializer.Serialize(message);
+        var lockObj = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
+        await lockObj.WaitAsync();
+
+        try
+        {
+            var conn = await GetOrCreateConnectionAsync(target);
+            if (conn?.IsConnected != true)
+                throw new IOException("Connection unavailable");
+
+            var stream = conn.Stream;
+            var buffer = ArrayPool<byte>.Shared.Rent(4 + data.Length);
+            try
+            {
+                BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
+                Buffer.BlockCopy(data, 0, buffer, 4, data.Length);
+
+                await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
+                conn.LastUsedUtc = DateTime.UtcNow;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            _metrics.Increment(MetricKeys.Msg.Wire.Sent);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Immediate send failed to {NodeId}: {Message}", target.NodeId, ex.Message);
+            _connections.TryRemove(target.NodeId, out var failedConn);
+            failedConn?.Dispose();
+            throw;
+        }
+        finally
+        {
+            lockObj.Release();
+        }
+    }
+
+
     public override Task<bool> CanReachNodeAsync(NodeInfo node)
     {
         return Task.FromResult(_connections.TryGetValue(node.NodeId, out var conn) && conn.IsConnected);
@@ -238,5 +319,6 @@ public class PipelinedTcpTransport : BaseTcpTransport
         }
 
         _outgoingChannels.TryRemove(nodeId, out _);
+        _sendLocks.TryRemove(nodeId, out _);
     }
 }

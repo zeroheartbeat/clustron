@@ -95,7 +95,7 @@ else
 
 static async Task PubSubMessages(IClustronClient client)
 {
-    const int TotalMessagesToSend = 100000;
+    const int TotalMessagesToSend = 175065;
 
     var selfId = client.Management.Self.NodeId;
     var receivedCounts = new Dictionary<string, int>();
@@ -114,7 +114,7 @@ static async Task PubSubMessages(IClustronClient client)
             receivedTotal++;
         }
 
-        if (evt.Payload.Id % 500 == 0)
+        if (evt.Payload.Id % 100000 == 0)
             Console.WriteLine($"[RECV] {evt.Payload.Name} from {evt.Publisher}");
 
         await Task.CompletedTask;
@@ -160,7 +160,6 @@ static async Task PubSubMessages(IClustronClient client)
         Console.WriteLine($"\n  Total received: {receivedTotal}");
         Console.WriteLine($"  Expected (approx): [Number of nodes] × {TotalMessagesToSend}");
     }
-    await Task.Delay(TimeSpan.FromSeconds(5));
     //Console.WriteLine("Press CTRL+C to exit.");
     await Task.Delay(Timeout.Infinite);
 }

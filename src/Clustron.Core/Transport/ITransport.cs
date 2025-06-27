@@ -21,6 +21,8 @@ namespace Clustron.Core.Transport
         void RemoveConnection(string nodeId);
         Task<bool> CanReachNodeAsync(NodeInfo node);
         Task HandlePeerDownAsync(string nodeId);
+
+        Task SendImmediateAsync(NodeInfo target, Message message);
     }
 }
 

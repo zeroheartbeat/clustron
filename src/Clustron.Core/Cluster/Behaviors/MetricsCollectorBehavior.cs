@@ -34,7 +34,7 @@ namespace Clustron.Core.Cluster.Behaviors
         private readonly ConcurrentDictionary<string, List<ClusterMetricsSnapshot>> _metricsHistory = new();
         private Timer? _timer;
 
-        private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan RetentionDuration = TimeSpan.FromHours(1);
 
         public string Name => "MetricsCollector";

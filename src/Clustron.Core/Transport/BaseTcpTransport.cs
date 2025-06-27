@@ -125,5 +125,7 @@ public abstract class BaseTcpTransport : ITransport
             }
         }
     }
+
+    public abstract Task SendImmediateAsync(NodeInfo target, Message message);
 }
 

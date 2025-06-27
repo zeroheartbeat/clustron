@@ -57,7 +57,9 @@ public static class InternalServiceRegistration
         var serializer = new MessagePackSerializerAdapter();
         MessageBuilder.Configure(serializer);
 
-        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>(), serializer);
+        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>()
+                            , serializer, handler => new DisruptorEventQueue<IClusterEvent>(e => handler(e)));
+
         services.AddSingleton<IClusterEventBus>(eventBus);
 
         var discoveryProvider = new AdaptiveDiscoveryProvider(config.StaticNodes ?? []);

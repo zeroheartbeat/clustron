@@ -64,12 +64,12 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
 
             var message = MessageBuilder.Create<HandshakeRequest>(_self.NodeId, MessageTypes.HandshakeRequest, request);
 
-            await _communication.Transport.SendAsync(targetNode, message);
+            await _communication.Transport.SendImmediateAsync(targetNode, message);
 
             var rawResponse = await _communication.Transport.WaitForResponseAsync(
                 targetNode.NodeId,
                 message.CorrelationId,
-                TimeSpan.FromSeconds(2));
+                TimeSpan.FromSeconds(5));
 
             if (rawResponse == null)
             {

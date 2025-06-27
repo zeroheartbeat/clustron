@@ -253,5 +253,10 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
     {
         throw new NotImplementedException();
     }
+
+    public override Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        throw new NotImplementedException();
+    }
 }
 

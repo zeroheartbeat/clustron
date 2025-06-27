@@ -306,6 +306,13 @@ namespace Clustron.Core.Cluster
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Cluster\ClusterNodeControllerBase.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Core.Cluster;
 using Clustron.Core.Cluster.State;
 using Clustron.Core.Models;
@@ -397,6 +404,13 @@ public abstract class ClusterNodeControllerBase : IClusterNodeController, IClust
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Cluster\ClusterPeerManager.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Core.Events;
 using Clustron.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -490,7 +504,7 @@ namespace Clustron.Core.Cluster
                 if (epoch == _currentEpoch)
                     return false;
 
-                _logger.LogInformation("Updating epoch for leader {LeaderId}: {OldEpoch} → {NewEpoch}", leader.NodeId, _currentEpoch, epoch);
+                _logger.LogInformation("Updating epoch for leader {LeaderId}: {OldEpoch} ? {NewEpoch}", leader.NodeId, _currentEpoch, epoch);
                 _currentEpoch = epoch;
                 return true;
             }
@@ -709,70 +723,81 @@ namespace Clustron.Core.Cluster;
             _logger = loggerProvider.GetLogger<JoinManager>();
         }
 
-        public async Task<JoinResult> JoinClusterAsync(NodeInfo self)
+    public async Task<JoinResult> JoinClusterAsync(NodeInfo self)
+    {
+        _logger.LogInformation("Registering self to discovery...");
+        await _clusterDiscovery.DiscoveryProvider.RegisterSelfAsync(self);
+
+        _logger.LogInformation("Discovering peer nodes...");
+        var discoveredPeers = (await _clusterDiscovery.DiscoveryProvider.DiscoverNodesAsync())
+            .ExcludeSelf(self.NodeId)
+            .ToList();
+
+        _logger.LogInformation("Discovered peers: {Peers}", string.Join(", ", discoveredPeers.Select(p => $"{p.NodeId} ({p.Host}:{p.Port})")));
+        _logger.LogInformation("Discovered {Count} peers: {Peers}",
+            discoveredPeers.Count,
+            string.Join(", ", discoveredPeers.Select(p => p.NodeId)));
+
+        var acceptedPeers = new List<NodeInfo>();
+        NodeInfo? knownLeader = null;
+        int highestEpoch = 0;
+
+        var handshakeTasks = discoveredPeers.Select(async peer =>
         {
-            _logger.LogInformation("Registering self to discovery...");
-            await _clusterDiscovery.DiscoveryProvider.RegisterSelfAsync(self);
-
-            _logger.LogInformation("Discovering peer nodes...");
-            var discoveredPeers = (await _clusterDiscovery.DiscoveryProvider.DiscoverNodesAsync()).ExcludeSelf(self.NodeId).ToList();
-
-            _logger.LogInformation("Discovered peers: {Peers}", string.Join(", ", discoveredPeers.Select(p => $"{p.NodeId} ({p.Host}:{p.Port})")));
-
-            _logger.LogInformation("Discovered {Count} peers: {Peers}",
-                discoveredPeers.Count,
-                string.Join(", ", discoveredPeers.Select(p => p.NodeId)));
-
-            var acceptedPeers = new List<NodeInfo>();
-            NodeInfo? knownLeader = null;
-            int highestEpoch = 0;
-
-            foreach (var peer in discoveredPeers)
+            try
             {
-                try
+                _logger.LogDebug("Attempting handshake with {Peer}", peer.NodeId);
+                var result = await RetryHelper.RetryAsync(
+                    () => _handshakeProtocol.InitiateHandshakeAsync(peer),
+                    _config.RetryOptions.MaxAttempts,
+                    _config.RetryOptions.DelayMilliseconds,
+                    _logger);
+
+                _logger.LogDebug("Handshake result from {Peer}: Accepted={Accepted}, Leader={Leader}",
+                    peer.NodeId,
+                    result.Accepted,
+                    result.Leader?.NodeId ?? "none");
+
+                return (Peer: peer, Result: result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Failed to handshake with {Peer}: {Error}", peer.NodeId, ex.Message);
+                return (Peer: peer, Result: (null as HandshakeResponse));
+            }
+        }).ToList();
+
+        var results = await Task.WhenAll(handshakeTasks);
+
+        foreach (var (peer, result) in results)
+        {
+            if (result == null)
+                continue;
+
+            if (result.Accepted)
+            {
+                _logger.LogInformation("Handshake successful with {Peer}", peer.NodeId);
+
+                _peerManager.RegisterPeer(result.ResponderNode);
+                acceptedPeers.Add(result.ResponderNode);
+
+                if (result.Leader != null && result.LeaderEpoch > highestEpoch)
                 {
-                    _logger.LogDebug("Attempting handshake with {Peer}", peer.NodeId);
-                    var result = await RetryHelper.RetryAsync(
-                            () => _handshakeProtocol.InitiateHandshakeAsync(peer),
-                            _config.RetryOptions.MaxAttempts,
-                            _config.RetryOptions.DelayMilliseconds,
-                            _logger);
-
-                    _logger.LogDebug("Handshake result from {Peer}: Accepted={Accepted}, Leader={Leader}",
-                        peer.NodeId,
-                        result.Accepted,
-                        result.Leader?.NodeId ?? "none");
-
-
-                    if (result.Accepted)
-                    {
-                        _logger.LogInformation("Handshake successful with {Peer}", peer.NodeId);
-
-                        _peerManager.RegisterPeer(result.ResponderNode); 
-
-                        acceptedPeers.Add(result.ResponderNode);
-
-                        if (result.Leader != null && result.LeaderEpoch > highestEpoch)
-                        {
-                            knownLeader = result.Leader;
-                            highestEpoch = result.LeaderEpoch;
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Handshake rejected by {Peer}: {Reason}", peer.NodeId, result.Reason);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning("Failed to handshake with {Peer}: {Error}", peer.NodeId, ex.Message);
+                    knownLeader = result.Leader;
+                    highestEpoch = result.LeaderEpoch;
                 }
             }
-
-            _logger.LogInformation("Total accepted peers after join: {Count}", acceptedPeers.Count);
-            return new JoinResult(acceptedPeers, knownLeader, highestEpoch);
+            else
+            {
+                _logger.LogWarning("Handshake rejected by {Peer}: {Reason}", peer.NodeId, result.Reason);
+            }
         }
+
+        _logger.LogInformation("Total accepted peers after join: {Count}", acceptedPeers.Count);
+        return new JoinResult(acceptedPeers, knownLeader, highestEpoch);
     }
+
+}
 
 
 
@@ -1695,6 +1720,8 @@ namespace Clustron.Core.Election
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\AsyncClusterEventBus.cs
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -1704,186 +1731,166 @@ using Clustron.Core.Models;
 using Clustron.Core.Serialization;
 using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Buffers;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 
-namespace Clustron.Core.Events
+namespace Clustron.Core.Events;
+
+public class AsyncClusterEventBus : IClusterEventBus
 {
-    public class AsyncClusterEventBus : IClusterEventBus
+    private readonly ILogger<AsyncClusterEventBus> _logger;
+    private readonly IMessageSerializer _serializer;
+
+    private IClusterCommunication _communication = null!;
+    private NodeInfo _self = null!;
+
+    private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _handlers = new();
+    private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
+
+    private readonly ConcurrentDictionary<Func<IClusterEvent, Task>, Channel<IClusterEvent>> _handlerQueues = new();
+
+    public AsyncClusterEventBus(ILogger<AsyncClusterEventBus> logger, IMessageSerializer serializer)
     {
-        private readonly ILogger<AsyncClusterEventBus> _logger;
-        private readonly IMessageSerializer _serializer;
-        private IClusterCommunication _communication;
-        private NodeInfo _self;
+        _logger = logger;
+        _serializer = serializer;
+    }
 
-        private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _asyncHandlers = new();
-        private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
+    public void Configure(IClusterCommunication communication, NodeInfo self)
+    {
+        _communication = communication;
+        _self = self;
+    }
 
-        private readonly Channel<IClusterEvent> _localEventQueue =
-            Channel.CreateBounded<IClusterEvent>(new BoundedChannelOptions(10000)
+    public void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent
+    {
+        Func<IClusterEvent, Task> wrapper = e => asyncHandler((T)e);
+
+        _handlers.AddOrUpdate(
+            typeof(T),
+            _ => new List<Func<IClusterEvent, Task>> { wrapper },
+            (_, existing) =>
             {
-                FullMode = BoundedChannelFullMode.Wait,
-                SingleReader = true,
-                SingleWriter = false
+                lock (existing) { existing.Add(wrapper); }
+                return existing;
             });
 
-        public AsyncClusterEventBus(
-            ILogger<AsyncClusterEventBus> logger,
-            IMessageSerializer serializer)
-        {
-            _logger = logger;
-            _serializer = serializer;
-            _ = Task.Run(ProcessEventQueueAsync);
-        }
+        _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
+            _serializer.Deserialize<T>(payload)!);
 
-        public void Configure(IClusterCommunication communication, NodeInfo self)
+        var queue = Channel.CreateUnbounded<IClusterEvent>(new UnboundedChannelOptions
         {
-            _communication = communication;
-            _self = self;
-        }
+            SingleReader = true,
+            SingleWriter = false
+        });
 
-        public void Subscribe<T>(Action<T> handler) where T : IClusterEvent
+        _handlerQueues.TryAdd(wrapper, queue);
+
+        // Launch dedicated task to process events for this handler
+        _ = Task.Run(async () =>
         {
-            Func<IClusterEvent, Task> wrapper = e =>
+            await foreach (var evt in queue.Reader.ReadAllAsync())
             {
-                handler((T)e);
-                return Task.CompletedTask;
-            };
-
-            AddHandler(typeof(T), wrapper);
-
-            _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
-                    _serializer.Deserialize<T>(payload)!);
-        }
-
-        public void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent
-        {
-            Func<IClusterEvent, Task> wrapper = e => asyncHandler((T)e);
-            AddHandler(typeof(T), wrapper);
-
-            _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
-                    _serializer.Deserialize<T>(payload)!);
-        }
-
-        private void AddHandler(Type type, Func<IClusterEvent, Task> handler)
-        {
-            _asyncHandlers.AddOrUpdate(
-                type,
-                _ => new List<Func<IClusterEvent, Task>> { handler },
-                (_, list) =>
+                try
                 {
-                    lock (list)
-                    {
-                        list.Add(handler);
-                    }
-                    return list;
-                });
-        }
-
-        public async Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null)
-        {
-            options ??= new EventDispatchOptions();
-            var type = evt.GetType();
-
-            if (options.Scope == DeliveryScope.ClusterWide)
-            {
-                await BroadcastEventAsync(evt, type);
-            }
-
-            if (!_asyncHandlers.TryGetValue(type, out var handlers))
-                return;
-
-            if (options.Scope == DeliveryScope.LocalOnly && options.Policy == DispatchPolicy.FireAndForget)
-            {
-                await _localEventQueue.Writer.WriteAsync(evt);
-                return;
-            }
-
-            switch (options.Policy)
-            {
-                case DispatchPolicy.Parallel:
-                    await Task.WhenAll(handlers.ToArray().Select(h => h(evt)));
-                    break;
-
-                case DispatchPolicy.Ordered:
-                    foreach (var handler in handlers.ToArray())
-                        await handler(evt);
-                    break;
-
-                case DispatchPolicy.Retry:
-                    foreach (var handler in handlers.ToArray())
-                    {
-                        await RetryHelper.RetryAsync(
-                            () => handler(evt),
-                            options.MaxRetryAttempts,
-                            options.RetryDelayMilliseconds,
-                            _logger);
-                    }
-                    break;
-            }
-        }
-
-        public void Publish(IClusterEvent evt) =>
-            PublishAsync(evt).GetAwaiter().GetResult();
-
-        public Task PublishFromNetworkAsync(byte[] payload, string eventType)
-        {
-            if (_deserializers.TryGetValue(eventType, out var factory))
-            {
-                var evt = factory(payload);
-                return PublishAsync(evt, new EventDispatchOptions() { Scope = DeliveryScope.LocalOnly });
-            }
-
-            return Task.CompletedTask;
-        }
-
-        private async Task BroadcastEventAsync(IClusterEvent evt, Type type)
-        {
-            var message = MessageBuilder.Create(
-                _self.NodeId,
-                evt.EventType,
-                type.AssemblyQualifiedName!,
-                evt);
-
-            var targetRoles = evt.EventType == MessageTypes.CustomEvent
-                ? new[] { ClustronRoles.Member }
-                : Array.Empty<string>();
-
-            await _communication.Transport.BroadcastAsync(message, targetRoles);
-        }
-
-        private async Task ProcessEventQueueAsync()
-        {
-            await foreach (var evt in _localEventQueue.Reader.ReadAllAsync())
-            {
-                var type = evt.GetType();
-
-                if (_asyncHandlers.TryGetValue(type, out var handlers))
+                    await wrapper(evt);
+                }
+                catch (Exception ex)
                 {
-                    foreach (var handler in handlers.ToArray())
-                    {
-                        try
-                        {
-                            await handler(evt);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Event handler failed for {Type}", type.Name);
-                        }
-                    }
+                    _logger.LogError(ex, "Handler failed for {Event}", evt.GetType().Name);
                 }
             }
+        });
+    }
+
+    public void Subscribe<T>(Action<T> handler) where T : IClusterEvent
+    {
+        Subscribe<T>(e =>
+        {
+            handler(e);
+            return Task.CompletedTask;
+        });
+    }
+
+    public async Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null)
+    {
+        options ??= new EventDispatchOptions();
+        var type = evt.GetType();
+
+        if (options.Scope == DeliveryScope.ClusterWide)
+            await BroadcastEventAsync(evt, type);
+
+        if (!_handlers.TryGetValue(type, out var handlerList))
+            return;
+
+        switch (options.Policy)
+        {
+            case DispatchPolicy.FireAndForget:
+                foreach (var handler in handlerList.ToArray())
+                {
+                    _ = Task.Run(() => handler(evt));
+                }
+                break;
+
+            case DispatchPolicy.Ordered:
+                foreach (var handler in handlerList.ToArray())
+                {
+                    if (_handlerQueues.TryGetValue(handler, out var queue))
+                        await queue.Writer.WriteAsync(evt);
+                }
+                break;
+
+            case DispatchPolicy.Parallel:
+                await Task.WhenAll(handlerList.ToArray().Select(h => h(evt)));
+                break;
+
+            case DispatchPolicy.Retry:
+                foreach (var handler in handlerList.ToArray())
+                {
+                    await RetryHelper.RetryAsync(
+                        () => handler(evt),
+                        options.MaxRetryAttempts,
+                        options.RetryDelayMilliseconds,
+                        _logger);
+                }
+                break;
         }
+    }
+
+    public void Publish(IClusterEvent evt)
+        => PublishAsync(evt).GetAwaiter().GetResult();
+
+    public async Task PublishFromNetworkAsync(byte[] payload, string eventType)
+    {
+        if (_deserializers.TryGetValue(eventType, out var factory))
+        {
+            var evt = factory(payload);
+            await PublishAsync(evt, new EventDispatchOptions { Scope = DeliveryScope.LocalOnly });
+        }
+    }
+
+    private async Task BroadcastEventAsync(IClusterEvent evt, Type type)
+    {
+        var message = MessageBuilder.Create(
+            _self.NodeId,
+            evt.EventType,
+            type.AssemblyQualifiedName!,
+            evt);
+
+        var targetRoles = evt.EventType == MessageTypes.CustomEvent
+            ? new[] { ClustronRoles.Member }
+            : Array.Empty<string>();
+
+        await _communication.Transport.BroadcastAsync(message, targetRoles);
     }
 }
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\ClusterAwareEventPublisher.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Abstractions;
 using Clustron.Core.Messaging;
 using Clustron.Core.Serialization;
@@ -1979,6 +1986,13 @@ namespace Clustron.Core.Events
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\ClusterEventScope.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -1997,6 +2011,13 @@ namespace Clustron.Core.Events
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\DeliveryScope.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -2072,6 +2093,13 @@ namespace Clustron.Core.Events
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\HeartbeatSuspect.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Core.Models;
 using System;
 using System.Collections.Generic;
@@ -2093,6 +2121,13 @@ namespace Clustron.Core.Events
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\IClusterEvent.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -2349,6 +2384,13 @@ namespace Clustron.Core.Extensions
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Handlers\ClusterEventMessageHandler.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Abstractions;
 using Clustron.Core.Events;
 using Clustron.Core.Messaging;
@@ -3006,6 +3048,13 @@ public class NodeJoinedHandler : IMessageHandler
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Handlers\NodeLeftHandler.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Events;
@@ -3511,6 +3560,13 @@ namespace Clustron.Core.Health
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Health\TcpHeartbeatMonitor.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Events;
@@ -5768,6 +5824,13 @@ public class PersistentConnection
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Transport\PipelinedTcpTransport.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -5842,6 +5905,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
                 while (TryReadMessage(ref buffer, out var message))
                 {
                     senderId = message.SenderId;
+
                     if (!string.IsNullOrEmpty(message.CorrelationId) &&
                         _responseAwaiters.TryRemove(message.CorrelationId, out var tcs))
                     {
@@ -5855,6 +5919,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
                 }
 
                 reader.AdvanceTo(buffer.Start, buffer.End);
+
                 if (result.IsCompleted) break;
             }
         }
@@ -5896,49 +5961,45 @@ public class PipelinedTcpTransport : BaseTcpTransport
     {
         var channel = _outgoingChannels.GetOrAdd(target.NodeId, key =>
         {
-            var options = new BoundedChannelOptions(1024)
-            {
-                FullMode = BoundedChannelFullMode.Wait,
-                SingleReader = true,
-                SingleWriter = false
-            };
-            var ch = Channel.CreateBounded<byte[]>(options);
+            var ch = Channel.CreateUnbounded<byte[]>();
             _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
             return ch;
         });
 
-        await channel.Writer.WriteAsync(data);
+        // Fast path
+        if (!channel.Writer.TryWrite(data))
+            await channel.Writer.WriteAsync(data);
     }
 
     private async Task ProcessSendQueue(NodeInfo target, ChannelReader<byte[]> reader)
     {
         PersistentConnection? conn = null;
-
         while (await reader.WaitToReadAsync())
         {
             while (reader.TryRead(out var data))
             {
                 try
                 {
-                    conn ??= await GetOrCreateConnectionAsync(target);
-                    if (conn == null || !conn.IsConnected)
-                    {
-                        conn?.Dispose();
-                        _connections.TryRemove(target.NodeId, out _);
-                        conn = await GetOrCreateConnectionAsync(target);
-                        if (conn == null || !conn.IsConnected)
-                            throw new IOException("Connection unavailable");
-                    }
-
-                    var stream = conn.Stream;
-
                     await RetryHelper.RetryAsync(async () =>
                     {
+                        conn ??= await GetOrCreateConnectionAsync(target);
+                        if (conn?.IsConnected != true)
+                        {
+                            conn?.Dispose();
+                            _connections.TryRemove(target.NodeId, out _);
+                            conn = await GetOrCreateConnectionAsync(target);
+                        }
+
+                        if (conn == null || !conn.IsConnected)
+                            throw new IOException("No available connection");
+
+                        var stream = conn.Stream;
                         var buffer = ArrayPool<byte>.Shared.Rent(4 + data.Length);
                         try
                         {
                             BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
-                            data.CopyTo(buffer, 4);
+                            Buffer.BlockCopy(data, 0, buffer, 4, data.Length);
+
                             await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
                             conn.LastUsedUtc = DateTime.UtcNow;
                         }
@@ -6940,6 +7001,13 @@ using System.Reflection;
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\obj\Debug\net9.0\Clustron.Core.AssemblyInfo.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -6966,6 +7034,13 @@ using System.Reflection;
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\obj\Debug\net9.0\Clustron.Core.GlobalUsings.g.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
 // <auto-generated/>
 global using global::System;
 global using global::System.Collections.Generic;
