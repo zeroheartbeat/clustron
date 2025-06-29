@@ -57,8 +57,14 @@ public static class InternalServiceRegistration
         var serializer = new MessagePackSerializerAdapter();
         MessageBuilder.Configure(serializer);
 
+        //For disruptor queue
         IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>()
-                            , serializer, handler => new DisruptorEventQueue<IClusterEvent>(e => handler(e)));
+                           , serializer, handler => new DisruptorEventQueue<IClusterEvent>(e => handler(e)));
+
+
+        //For channel queue
+        //IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>()
+        //                    , serializer);
 
         services.AddSingleton<IClusterEventBus>(eventBus);
 

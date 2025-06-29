@@ -72,19 +72,49 @@ public abstract class BaseTcpTransport : ITransport
         _responseAwaiters[correlationId] = tcs;
 
         var cts = new CancellationTokenSource(timeout);
-        cts.Token.Register(() =>
+        CancellationTokenRegistration registration = cts.Token.Register(() =>
         {
             if (_responseAwaiters.TryRemove(correlationId, out var existing))
+            {
                 existing.TrySetCanceled();
+            }
         });
+
+        // When the task is completed (either by result or cancellation), dispose the resources.
+        tcs.Task.ContinueWith(_ =>
+        {
+            registration.Dispose();
+            cts.Dispose();
+        }, TaskScheduler.Default);
 
         return tcs.Task;
     }
 
-    public virtual Task HandlePeerDownAsync(string nodeId)
+
+
+    public virtual async Task HandlePeerDownAsync(string nodeId)
     {
-        RemoveConnection(nodeId);
-        return Task.CompletedTask;
+        try
+        {
+            var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
+            if (node == null)
+            {
+                _logger.LogWarning("HandlePeerDownAsync called, but node {NodeId} not found in registry.", nodeId);
+                return;
+            }
+
+            // Vet and remove via central peer manager
+            bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+            {
+                bool reachable = await CanReachNodeAsync(p);
+                _logger.LogDebug("Vet before removal: node {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+                return !reachable;
+            });
+        }
+        finally
+        {
+            RemoveConnection(nodeId);
+        }
     }
 
     protected static async Task ReadExactlyAsync(Stream stream, byte[] buffer, int offset, int count)

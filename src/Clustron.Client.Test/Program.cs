@@ -14,6 +14,7 @@ using Clustron.Core.Events;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Diagnostics;
 using System.Reflection;
 
 //// ✅ Pass command-line args to host builder
@@ -95,7 +96,8 @@ else
 
 static async Task PubSubMessages(IClustronClient client)
 {
-    const int TotalMessagesToSend = 175065;
+    var sw = Stopwatch.StartNew();
+    const int TotalMessagesToSend = 10000000;
 
     var selfId = client.Management.Self.NodeId;
     var receivedCounts = new Dictionary<string, int>();
@@ -114,7 +116,7 @@ static async Task PubSubMessages(IClustronClient client)
             receivedTotal++;
         }
 
-        if (evt.Payload.Id % 100000 == 0)
+        if (evt.Payload.Id % 50000 == 0)
             Console.WriteLine($"[RECV] {evt.Payload.Name} from {evt.Publisher}");
 
         await Task.CompletedTask;
@@ -141,17 +143,19 @@ static async Task PubSubMessages(IClustronClient client)
 
         await client.Messaging.PublishAsync(evt);
 
-        if (i % 100 == 0)
+        if (i % 50000 == 0)
             Console.WriteLine($"[{selfId}] Sent {i} messages");
 
-        await Task.Delay(1); // small delay to avoid flooding
+        //await Task.Delay(1); // small delay to avoid flooding
     }
 
     Console.WriteLine($"[{selfId}] Done sending. Waiting for all messages to arrive...");
-    await Task.Delay(TimeSpan.FromSeconds(10));
+    await Task.Delay(TimeSpan.FromSeconds(30));
+
+    sw.Stop();
 
     // Print summary
-    Console.WriteLine($"\n[{selfId}] Message Receipt Summary:");
+    Console.WriteLine($"\n[{selfId}] Message Receipt Summary ({sw.Elapsed.ToString()}):");
     lock (lockObj)
     {
         foreach (var kvp in receivedCounts.OrderBy(k => k.Key))

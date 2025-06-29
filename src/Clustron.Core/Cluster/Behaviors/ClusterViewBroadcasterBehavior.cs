@@ -26,7 +26,7 @@ public class ClusterViewBroadcasterBehavior : IRoleAwareBehavior
     private readonly IClusterCommunication _communication;
     private System.Timers.Timer? _timer;
 
-    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan BroadcastInterval = TimeSpan.FromMinutes(10);
 
     public string Name => "ClusterViewBroadcaster";
 

@@ -29,8 +29,8 @@ public class PipelinedTcpTransport : BaseTcpTransport
     private readonly int _port;
     private TcpListener? _listener;
     private readonly ConcurrentDictionary<string, Channel<byte[]>> _outgoingChannels = new();
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sendLocks = new();
-    private readonly ILogger _logger;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _teardownLocks = new();
+
     private readonly IMetricContributor _metrics;
     private readonly RetryOptions _retryOptions;
 
@@ -96,7 +96,15 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
                 reader.AdvanceTo(buffer.Start, buffer.End);
 
-                if (result.IsCompleted) break;
+                if (result.IsCompleted)
+                {
+                    if (!string.IsNullOrEmpty(senderId))
+                    {
+                        _logger.LogInformation("Client {SenderId} disconnected gracefully", senderId);
+                        await HandlePeerDownAsync(senderId); 
+                    }
+                    break;
+                }
             }
         }
         catch (Exception ex)
@@ -109,6 +117,39 @@ public class PipelinedTcpTransport : BaseTcpTransport
                 await HandlePeerDownAsync(senderId);
 
             client.Close();
+        }
+    }
+
+    public virtual async Task HandlePeerDownAsync(string nodeId)
+    {
+        var teardownLock = _teardownLocks.GetOrAdd(nodeId, _ => new SemaphoreSlim(1, 1));
+        await teardownLock.WaitAsync();
+
+        try
+        {
+            var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
+            if (node == null)
+            {
+                _logger.LogWarning("HandlePeerDownAsync called, but node {NodeId} not found in registry.", nodeId);
+                return;
+            }
+
+            // Vet and remove via central peer manager
+            bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
+            {
+                bool reachable = await CanReachNodeAsync(p);
+                _logger.LogDebug("Vet before removal: node {NodeId} reachable? {Reachable}", p.NodeId, reachable);
+                return !reachable;
+            });
+
+            if(removed)
+                RemoveConnection(nodeId);
+        }
+        finally
+        {
+            
+            _teardownLocks.TryRemove(nodeId, out _); 
+            teardownLock.Release();
         }
     }
 
@@ -153,6 +194,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
     private Channel<byte[]> GetOrCreateValidChannel(NodeInfo target)
     {
+        
         while (true)
         {
             if (_outgoingChannels.TryGetValue(target.NodeId, out var existing))
@@ -171,6 +213,14 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
     private Channel<byte[]> CreateChannel(NodeInfo target)
     {
+        _logger.LogCritical("Creating new channel for {NodeId}", target.NodeId);
+
+        if (!_peerManager.IsAlive(target.NodeId))
+        {
+            _logger.LogWarning("Refusing to create channel for dead node {NodeId}", target.NodeId);
+            throw new IOException($"Node {target.NodeId} is marked down");
+        }
+
         var ch = Channel.CreateUnbounded<byte[]>();
         _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
         return ch;
@@ -222,11 +272,22 @@ public class PipelinedTcpTransport : BaseTcpTransport
                 catch (Exception ex)
                 {
                     _logger.LogWarning("Send failed to {NodeId}: {Message}", target.NodeId, ex.Message);
+
                     conn?.Dispose();
                     _connections.TryRemove(target.NodeId, out _);
                     conn = null;
-                    await Task.Delay(100);
+
+                    await HandlePeerDownAsync(target.NodeId);
+
+                    // Mark the channel complete to exit the send loop
+                    if (_outgoingChannels.TryRemove(target.NodeId, out var channel))
+                    {
+                        channel.Writer.TryComplete();
+                    }
+
+                    return; // Break out of loop — no point retrying further
                 }
+
                 finally
                 {
                     lockObj.Release();
@@ -237,28 +298,37 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
     private async Task<PersistentConnection?> GetOrCreateConnectionAsync(NodeInfo target)
     {
-        if (_connections.TryGetValue(target.NodeId, out var existingConn) && existingConn.IsConnected)
-        {
-            existingConn.LastUsedUtc = DateTime.UtcNow;
-            return existingConn;
-        }
-
+        if (_teardownLocks.TryGetValue(target.NodeId, out var teardownLock))
+            await teardownLock.WaitAsync(); // Wait until the node is fully processed
         try
         {
-            var client = new TcpClient();
-            await client.ConnectAsync(target.Host, target.Port);
-            var conn = new PersistentConnection(client)
+            if (_connections.TryGetValue(target.NodeId, out var existingConn) && existingConn.IsConnected)
             {
-                RemoteNodeId = target.NodeId,
-                IsInbound = false
-            };
-            _connections[target.NodeId] = conn;
-            return conn;
+                existingConn.LastUsedUtc = DateTime.UtcNow;
+                return existingConn;
+            }
+
+            try
+            {
+                var client = new TcpClient();
+                await client.ConnectAsync(target.Host, target.Port);
+                var conn = new PersistentConnection(client)
+                {
+                    RemoteNodeId = target.NodeId,
+                    IsInbound = false
+                };
+                _connections[target.NodeId] = conn;
+                return conn;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Failed to connect to {NodeId}: {Error}", target.NodeId, ex.Message);
+                return null;
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogWarning("Failed to connect to {NodeId}: {Error}", target.NodeId, ex.Message);
-            return null;
+            teardownLock?.Release();
         }
     }
 
@@ -318,7 +388,11 @@ public class PipelinedTcpTransport : BaseTcpTransport
             _logger.LogInformation("Removed connection to {NodeId}", nodeId);
         }
 
-        _outgoingChannels.TryRemove(nodeId, out _);
+        if (_outgoingChannels.TryRemove(nodeId, out var channel))
+        {
+            channel.Writer.TryComplete(); // Signal send loop to exit
+            _logger.LogInformation("Closed send channel for {NodeId}", nodeId);
+        }
         _sendLocks.TryRemove(nodeId, out _);
     }
 }

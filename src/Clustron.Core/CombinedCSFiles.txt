@@ -1720,8 +1720,15 @@ namespace Clustron.Core.Election
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Events\AsyncClusterEventBus.cs
+// Copyright (c) 2025 zeroheartbeat
+//
+// Use of this software is governed by the Business Source License 1.1,
+// included in the LICENSE file in the root of this repository.
+//
+// Production use is not permitted without a commercial license from the Licensor.
+// To obtain a license for production, please contact: support@clustron.io
+
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -1738,19 +1745,23 @@ public class AsyncClusterEventBus : IClusterEventBus
 {
     private readonly ILogger<AsyncClusterEventBus> _logger;
     private readonly IMessageSerializer _serializer;
+    private readonly Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>> _queueFactory;
 
     private IClusterCommunication _communication = null!;
     private NodeInfo _self = null!;
 
     private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _handlers = new();
     private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
+    private readonly ConcurrentDictionary<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>> _handlerQueues = new();
 
-    private readonly ConcurrentDictionary<Func<IClusterEvent, Task>, Channel<IClusterEvent>> _handlerQueues = new();
-
-    public AsyncClusterEventBus(ILogger<AsyncClusterEventBus> logger, IMessageSerializer serializer)
+    public AsyncClusterEventBus(
+        ILogger<AsyncClusterEventBus> logger,
+        IMessageSerializer serializer,
+        Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>>? queueFactory = null)
     {
         _logger = logger;
         _serializer = serializer;
+        _queueFactory = queueFactory ?? (handler => new ChannelEventQueue<IClusterEvent>(handler, logger));
     }
 
     public void Configure(IClusterCommunication communication, NodeInfo self)
@@ -1766,38 +1777,15 @@ public class AsyncClusterEventBus : IClusterEventBus
         _handlers.AddOrUpdate(
             typeof(T),
             _ => new List<Func<IClusterEvent, Task>> { wrapper },
-            (_, existing) =>
-            {
-                lock (existing) { existing.Add(wrapper); }
-                return existing;
-            });
+            (_, existing) => { lock (existing) existing.Add(wrapper); return existing; });
 
         _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
             _serializer.Deserialize<T>(payload)!);
 
-        var queue = Channel.CreateUnbounded<IClusterEvent>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
+        var queue = _queueFactory(wrapper);
+        queue.Start();
 
         _handlerQueues.TryAdd(wrapper, queue);
-
-        // Launch dedicated task to process events for this handler
-        _ = Task.Run(async () =>
-        {
-            await foreach (var evt in queue.Reader.ReadAllAsync())
-            {
-                try
-                {
-                    await wrapper(evt);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Handler failed for {Event}", evt.GetType().Name);
-                }
-            }
-        });
     }
 
     public void Subscribe<T>(Action<T> handler) where T : IClusterEvent
@@ -1824,16 +1812,14 @@ public class AsyncClusterEventBus : IClusterEventBus
         {
             case DispatchPolicy.FireAndForget:
                 foreach (var handler in handlerList.ToArray())
-                {
                     _ = Task.Run(() => handler(evt));
-                }
                 break;
 
             case DispatchPolicy.Ordered:
                 foreach (var handler in handlerList.ToArray())
                 {
                     if (_handlerQueues.TryGetValue(handler, out var queue))
-                        await queue.Writer.WriteAsync(evt);
+                        queue.Enqueue(evt);
                 }
                 break;
 
@@ -2444,6 +2430,7 @@ namespace Clustron.Core.Handlers
 
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
+using Clustron.Core.Extensions;
 using Clustron.Core.Handshake;
 using Clustron.Core.Messaging;
 using Clustron.Core.Models;
@@ -2484,6 +2471,9 @@ public class ClusterViewHandler : IMessageHandler
         foreach (var peer in payload.KnownPeers)
         {
             if (peer.NodeId == _runtime.Self.NodeId)
+                continue;
+
+            if (!peer.IsMember())
                 continue;
 
             if (!_runtime.PeerManager.IsPeerKnown(peer.NodeId))
@@ -3318,12 +3308,12 @@ public class TcpHandshakeProtocol : IHandshakeProtocol
 
             var message = MessageBuilder.Create<HandshakeRequest>(_self.NodeId, MessageTypes.HandshakeRequest, request);
 
-            await _communication.Transport.SendAsync(targetNode, message);
+            await _communication.Transport.SendImmediateAsync(targetNode, message);
 
             var rawResponse = await _communication.Transport.WaitForResponseAsync(
                 targetNode.NodeId,
                 message.CorrelationId,
-                TimeSpan.FromSeconds(2));
+                TimeSpan.FromSeconds(5));
 
             if (rawResponse == null)
             {
@@ -4078,7 +4068,18 @@ public static class InternalServiceRegistration
         var serializer = new MessagePackSerializerAdapter();
         MessageBuilder.Configure(serializer);
 
-        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>(), serializer);
+        var sharedQueue = new SharedDisruptorEventQueue<IClusterEvent>(
+            loggerFactory.CreateLogger<SharedDisruptorEventQueue<IClusterEvent>>());
+
+        //For disruptor queue
+        IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>()
+                           , serializer, handler => new DisruptorEventQueue<IClusterEvent>(e => handler(e)));
+
+
+        //For channel queue
+        //IClusterEventBus eventBus = new AsyncClusterEventBus(loggerFactory.CreateLogger<AsyncClusterEventBus>()
+        //                    , serializer);
+
         services.AddSingleton<IClusterEventBus>(eventBus);
 
         var discoveryProvider = new AdaptiveDiscoveryProvider(config.StaticNodes ?? []);
@@ -4769,6 +4770,116 @@ public class NodeInfo
 }
 
 
+// File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Models\SharedDisruptorEventQueue.cs
+using Clustron.Abstractions;
+using Clustron.Core.Events;
+using Disruptor;
+using Disruptor.Dsl;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Clustron.Core.Models
+{
+    public class SharedDisruptorEventQueue<T> : ISharedEventQueue<T>
+    {
+        private readonly ILogger _logger;
+        private readonly Disruptor<Wrapper> _disruptor;
+        private readonly RingBuffer<Wrapper> _ringBuffer;
+
+        private class Wrapper { public T? Item; }
+
+        // 🔥 Safe handler map per actual runtime type
+        private readonly ConcurrentDictionary<Type, List<Func<T, Task>>> _handlers = new();
+
+        public SharedDisruptorEventQueue(ILogger logger, int bufferSize = 1024)
+        {
+            _logger = logger;
+            _disruptor = new Disruptor<Wrapper>(() => new Wrapper(), bufferSize, TaskScheduler.Default, ProducerType.Multi, new BlockingWaitStrategy());
+            _disruptor.HandleEventsWith(new SharedHandler(_handlers, _logger));
+            _ringBuffer = _disruptor.Start();
+        }
+
+        public void Enqueue(T item)
+        {
+            var seq = _ringBuffer.Next();
+            _ringBuffer[seq].Item = item;
+            _ringBuffer.Publish(seq);
+        }
+
+        public void Start() { /* already started */ }
+
+        public void Stop() => _disruptor.Shutdown();
+
+        public void RegisterHandler(Func<T, Task> handler)
+        {
+            var targetType = GetTargetType(handler);
+            if (targetType == null)
+            {
+                _logger.LogWarning("Handler registration failed: unable to determine target type.");
+                return;
+            }
+
+            _handlers.AddOrUpdate(
+                targetType,
+                _ => new List<Func<T, Task>> { handler },
+                (_, list) => { lock (list) list.Add(handler); return list; });
+        }
+
+        private static Type? GetTargetType(Delegate handler)
+        {
+            // Extract generic parameter from the lambda type-safe casting
+            var method = handler.Method;
+            var parameters = method.GetParameters();
+            if (parameters.Length != 1) return null;
+
+            return parameters[0].ParameterType;
+        }
+
+        private class SharedHandler : IEventHandler<Wrapper>
+        {
+            private readonly ConcurrentDictionary<Type, List<Func<T, Task>>> _handlers;
+            private readonly ILogger _logger;
+
+            public SharedHandler(ConcurrentDictionary<Type, List<Func<T, Task>>> handlers, ILogger logger)
+            {
+                _handlers = handlers;
+                _logger = logger;
+            }
+
+            public void OnEvent(Wrapper evt, long sequence, bool endOfBatch)
+            {
+                if (evt.Item is not { } item) return;
+
+                var actualType = item.GetType();
+                if (_handlers.TryGetValue(actualType, out var handlerList))
+                {
+                    foreach (var handler in handlerList.ToArray()) // Copy for thread-safety
+                    {
+                        try
+                        {
+                            handler(item).Wait(); // TODO: Consider Task.Run or async runner
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "SharedDisruptorEventQueue handler failed");
+                        }
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("No handler registered for type {Type}", actualType.FullName);
+                }
+            }
+        }
+    }
+}
+
+
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\Observability\ClusterMetricsReceiver.cs
 // Copyright (c) 2025 zeroheartbeat
 //
@@ -5304,6 +5415,8 @@ public abstract class BaseTcpTransport : ITransport
             }
         }
     }
+
+    public abstract Task SendImmediateAsync(NodeInfo target, Message message);
 }
 
 
@@ -5639,6 +5752,8 @@ public class DuplexTcpTransport : BaseTcpTransport
         return false;
     }
 
+    public override Task SendImmediateAsync(NodeInfo target, Message message) => SendAsync(target, message);
+
     public override void RemoveConnection(string nodeId)
     {
         if (_connections.TryRemove(nodeId, out var conn))
@@ -5699,6 +5814,8 @@ namespace Clustron.Core.Transport
         void RemoveConnection(string nodeId);
         Task<bool> CanReachNodeAsync(NodeInfo node);
         Task HandlePeerDownAsync(string nodeId);
+
+        Task SendImmediateAsync(NodeInfo target, Message message);
     }
 }
 
@@ -5777,6 +5894,11 @@ public class NullTransport : ITransport
     {
         throw new NotImplementedException();
     }
+
+    public Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        throw new NotImplementedException();
+    }
 }
 
 
@@ -5831,6 +5953,7 @@ public class PersistentConnection
 //
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
+
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -5854,6 +5977,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
     private readonly int _port;
     private TcpListener? _listener;
     private readonly ConcurrentDictionary<string, Channel<byte[]>> _outgoingChannels = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sendLocks = new();
     private readonly ILogger _logger;
     private readonly IMetricContributor _metrics;
     private readonly RetryOptions _retryOptions;
@@ -5959,25 +6083,58 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
     public override async Task SendAsync(NodeInfo target, byte[] data)
     {
-        var channel = _outgoingChannels.GetOrAdd(target.NodeId, key =>
-        {
-            var ch = Channel.CreateUnbounded<byte[]>();
-            _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
-            return ch;
-        });
+        var channel = GetOrCreateValidChannel(target);
 
-        // Fast path
         if (!channel.Writer.TryWrite(data))
-            await channel.Writer.WriteAsync(data);
+        {
+            try
+            {
+                await channel.Writer.WriteAsync(data);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "WriteAsync failed to {NodeId}", target.NodeId);
+                _outgoingChannels.TryRemove(target.NodeId, out _);
+            }
+        }
+    }
+
+    private Channel<byte[]> GetOrCreateValidChannel(NodeInfo target)
+    {
+        while (true)
+        {
+            if (_outgoingChannels.TryGetValue(target.NodeId, out var existing))
+            {
+                if (!existing.Reader.Completion.IsCompleted)
+                    return existing;
+
+                _outgoingChannels.TryRemove(target.NodeId, out _);
+            }
+
+            var newChannel = CreateChannel(target);
+            if (_outgoingChannels.TryAdd(target.NodeId, newChannel))
+                return newChannel;
+        }
+    }
+
+    private Channel<byte[]> CreateChannel(NodeInfo target)
+    {
+        var ch = Channel.CreateUnbounded<byte[]>();
+        _ = Task.Run(() => ProcessSendQueue(target, ch.Reader));
+        return ch;
     }
 
     private async Task ProcessSendQueue(NodeInfo target, ChannelReader<byte[]> reader)
     {
         PersistentConnection? conn = null;
+        var lockObj = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
+
         while (await reader.WaitToReadAsync())
         {
             while (reader.TryRead(out var data))
             {
+                await lockObj.WaitAsync();
+
                 try
                 {
                     await RetryHelper.RetryAsync(async () =>
@@ -5999,7 +6156,6 @@ public class PipelinedTcpTransport : BaseTcpTransport
                         {
                             BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
                             Buffer.BlockCopy(data, 0, buffer, 4, data.Length);
-
                             await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
                             conn.LastUsedUtc = DateTime.UtcNow;
                         }
@@ -6018,6 +6174,10 @@ public class PipelinedTcpTransport : BaseTcpTransport
                     _connections.TryRemove(target.NodeId, out _);
                     conn = null;
                     await Task.Delay(100);
+                }
+                finally
+                {
+                    lockObj.Release();
                 }
             }
         }
@@ -6050,6 +6210,49 @@ public class PipelinedTcpTransport : BaseTcpTransport
         }
     }
 
+    public async override Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        var data = _serializer.Serialize(message);
+        var lockObj = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
+        await lockObj.WaitAsync();
+
+        try
+        {
+            var conn = await GetOrCreateConnectionAsync(target);
+            if (conn?.IsConnected != true)
+                throw new IOException("Connection unavailable");
+
+            var stream = conn.Stream;
+            var buffer = ArrayPool<byte>.Shared.Rent(4 + data.Length);
+            try
+            {
+                BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), data.Length);
+                Buffer.BlockCopy(data, 0, buffer, 4, data.Length);
+
+                await stream.WriteAsync(buffer.AsMemory(0, 4 + data.Length));
+                conn.LastUsedUtc = DateTime.UtcNow;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            _metrics.Increment(MetricKeys.Msg.Wire.Sent);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Immediate send failed to {NodeId}: {Message}", target.NodeId, ex.Message);
+            _connections.TryRemove(target.NodeId, out var failedConn);
+            failedConn?.Dispose();
+            throw;
+        }
+        finally
+        {
+            lockObj.Release();
+        }
+    }
+
+
     public override Task<bool> CanReachNodeAsync(NodeInfo node)
     {
         return Task.FromResult(_connections.TryGetValue(node.NodeId, out var conn) && conn.IsConnected);
@@ -6064,6 +6267,7 @@ public class PipelinedTcpTransport : BaseTcpTransport
         }
 
         _outgoingChannels.TryRemove(nodeId, out _);
+        _sendLocks.TryRemove(nodeId, out _);
     }
 }
 
@@ -6381,6 +6585,11 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
     }
 
     public override Task SendAsync(NodeInfo target, byte[] data)
+    {
+        throw new NotImplementedException();
+    }
+
+    public override Task SendImmediateAsync(NodeInfo target, Message message)
     {
         throw new NotImplementedException();
     }
@@ -6776,7 +6985,7 @@ namespace Clustron.Core.Cluster.Behaviors
         private readonly ConcurrentDictionary<string, List<ClusterMetricsSnapshot>> _metricsHistory = new();
         private Timer? _timer;
 
-        private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan RetentionDuration = TimeSpan.FromHours(1);
 
         public string Name => "MetricsCollector";
@@ -7001,13 +7210,6 @@ using System.Reflection;
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\obj\Debug\net9.0\Clustron.Core.AssemblyInfo.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -7024,7 +7226,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+739d6903e4442872262064dd6ce2da227dac7258")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+eaf7684b58d446fa3a2457cfb67511373ff8e47d")]
 [assembly: System.Reflection.AssemblyProductAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Clustron.Core")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -7034,13 +7236,6 @@ using System.Reflection;
 
 
 // File: D:\Home\Personal\projects\Clustron\src\Clustron.Core\obj\Debug\net9.0\Clustron.Core.GlobalUsings.g.cs
-// Copyright (c) 2025 zeroheartbeat
-//
-// Use of this software is governed by the Business Source License 1.1,
-// included in the LICENSE file in the root of this repository.
-//
-// Production use is not permitted without a commercial license from the Licensor.
-// To obtain a license for production, please contact: support@clustron.io
 // <auto-generated/>
 global using global::System;
 global using global::System.Collections.Generic;

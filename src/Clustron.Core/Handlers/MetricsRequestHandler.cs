@@ -16,6 +16,7 @@ using Clustron.Core.Transport;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -59,7 +60,10 @@ namespace Clustron.Core.Handlers
                 request = new MetricsRequest(); // fallback to default
             }
 
+            var sw = Stopwatch.StartNew();
             var snapshot = _snapshotProvider.CaptureSnapshot(request.DurationSeconds);
+            sw.Stop();
+            _logger.LogCritical("Captured snapshot in {Elapsed}ms", sw.ElapsedMilliseconds);
             snapshot.TimestampUtc = DateTime.UtcNow;
 
             var reply = MessageBuilder.Create<ClusterMetricsSnapshot>(_runtime.Self.NodeId, MessageTypes.ClustronMetrics, message.CorrelationId, snapshot);

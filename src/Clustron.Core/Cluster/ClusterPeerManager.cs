@@ -55,7 +55,7 @@ namespace Clustron.Core.Cluster
             if (!_registry.IsAlive(peer.NodeId))
             {
                 _logger.LogDebug("Peer {NodeId} not found in active peers", peer.NodeId);
-                return false;
+                return true;
             }
 
             if (vettingCallback != null)
@@ -75,7 +75,7 @@ namespace Clustron.Core.Cluster
                 _eventBus.Publish(new NodeLeftEvent(peer));
             }
 
-            return wasAlive;
+            return true;
         }
 
         // --- LEADER MANAGEMENT ---

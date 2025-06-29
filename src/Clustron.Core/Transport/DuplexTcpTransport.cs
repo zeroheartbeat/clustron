@@ -338,29 +338,5 @@ public class DuplexTcpTransport : BaseTcpTransport
             _logger.LogInformation("Removed connection to {NodeId}", nodeId);
         }
     }
-
-    public override async Task HandlePeerDownAsync(string nodeId)
-    {
-        var node = _peerManager.GetAllKnownPeers().FirstOrDefault(n => n.NodeId == nodeId);
-        if (node == null)
-        {
-            _logger.LogWarning("HandlePeerDownAsync called, but node {NodeId} not found in registry.", nodeId);
-            return;
-        }
-
-        // Vet and remove via central peer manager
-        bool removed = await _peerManager.TryRemovePeerAsync(node, async p =>
-        {
-            bool reachable = await CanReachNodeAsync(p);
-            _logger.LogDebug("Vet before removal: node {NodeId} reachable? {Reachable}", p.NodeId, reachable);
-            return !reachable;
-        });
-
-        if (removed)
-        {
-            RemoveConnection(nodeId);
-        }
-    }
-
 }
 

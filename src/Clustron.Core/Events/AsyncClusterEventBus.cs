@@ -1,12 +1,12 @@
-// Copyright (c) 2025 zeroheartbeat
+﻿// Copyright (c) 2025 zeroheartbeat
 //
 // Use of this software is governed by the Business Source License 1.1,
 // included in the LICENSE file in the root of this repository.
 //
 // Production use is not permitted without a commercial license from the Licensor.
 // To obtain a license for production, please contact: support@clustron.io
+
 using System.Collections.Concurrent;
-using System.Threading.Channels;
 using Clustron.Abstractions;
 using Clustron.Core.Cluster;
 using Clustron.Core.Configuration;
@@ -23,25 +23,23 @@ public class AsyncClusterEventBus : IClusterEventBus
 {
     private readonly ILogger<AsyncClusterEventBus> _logger;
     private readonly IMessageSerializer _serializer;
+    private readonly Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>> _queueFactory;
 
     private IClusterCommunication _communication = null!;
     private NodeInfo _self = null!;
 
     private readonly ConcurrentDictionary<Type, List<Func<IClusterEvent, Task>>> _handlers = new();
     private readonly ConcurrentDictionary<string, Func<byte[], IClusterEvent>> _deserializers = new();
-
-    private readonly Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>> _queueFactory;
     private readonly ConcurrentDictionary<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>> _handlerQueues = new();
 
     public AsyncClusterEventBus(
-    ILogger<AsyncClusterEventBus> logger,
-    IMessageSerializer serializer,
-    Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>>? queueFactory = null)
+        ILogger<AsyncClusterEventBus> logger,
+        IMessageSerializer serializer,
+        Func<Func<IClusterEvent, Task>, IEventQueue<IClusterEvent>>? queueFactory = null)
     {
         _logger = logger;
         _serializer = serializer;
-        _queueFactory = queueFactory ?? (handler =>
-            new ChannelEventQueue<IClusterEvent>(handler, logger));
+        _queueFactory = queueFactory ?? (handler => new ChannelEventQueue<IClusterEvent>(handler, logger));
     }
 
     public void Configure(IClusterCommunication communication, NodeInfo self)
@@ -51,23 +49,22 @@ public class AsyncClusterEventBus : IClusterEventBus
     }
 
     public void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent
-{
-    Func<IClusterEvent, Task> wrapper = e => asyncHandler((T)e);
+    {
+        Func<IClusterEvent, Task> wrapper = e => asyncHandler((T)e);
 
-    _handlers.AddOrUpdate(
-        typeof(T),
-        _ => new List<Func<IClusterEvent, Task>> { wrapper },
-        (_, existing) => { lock (existing) existing.Add(wrapper); return existing; });
+        _handlers.AddOrUpdate(
+            typeof(T),
+            _ => new List<Func<IClusterEvent, Task>> { wrapper },
+            (_, existing) => { lock (existing) existing.Add(wrapper); return existing; });
 
-    _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
-        _serializer.Deserialize<T>(payload)!);
+        _deserializers.TryAdd(typeof(T).AssemblyQualifiedName!, payload =>
+            _serializer.Deserialize<T>(payload)!);
 
-    var queue = _queueFactory(wrapper);
-    queue.Start();
+        var queue = _queueFactory(wrapper);
+        queue.Start();
 
-    _handlerQueues.TryAdd(wrapper, queue);
-}
-
+        _handlerQueues.TryAdd(wrapper, queue);
+    }
 
     public void Subscribe<T>(Action<T> handler) where T : IClusterEvent
     {
@@ -93,9 +90,7 @@ public class AsyncClusterEventBus : IClusterEventBus
         {
             case DispatchPolicy.FireAndForget:
                 foreach (var handler in handlerList.ToArray())
-                {
                     _ = Task.Run(() => handler(evt));
-                }
                 break;
 
             case DispatchPolicy.Ordered:
