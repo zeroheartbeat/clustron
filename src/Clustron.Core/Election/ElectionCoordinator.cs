@@ -50,7 +50,7 @@ public class ElectionCoordinator
 
             if (elected == null)
             {
-                _logger.LogWarning("No eligible leader could be elected.");
+                _logger.LogInformation("No eligible leader could be elected.");
             }
 
             return elected;

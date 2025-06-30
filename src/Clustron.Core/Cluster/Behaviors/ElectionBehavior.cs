@@ -41,16 +41,6 @@ namespace Clustron.Core.Cluster.Behaviors
         public async Task<NodeInfo?> RunElectionAsync()
         {
             var leader = await _coordinator.ElectLeaderAsync(_peerManager.GetActivePeers());
-
-            if (leader != null)
-            {
-                _logger.LogInformation("Elected leader: {NodeId}", leader.NodeId);
-            }
-            else
-            {
-                _logger.LogWarning("No eligible leader could be elected.");
-            }
-
             return leader;
         }
 

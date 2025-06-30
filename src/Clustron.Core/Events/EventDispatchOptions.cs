@@ -16,7 +16,7 @@ namespace Clustron.Core.Events
 {
     public class EventDispatchOptions
     {
-        public DispatchPolicy Policy { get; set; } = DispatchPolicy.Ordered;
+        public DispatchPolicy Policy { get; set; } = DispatchPolicy.FireAndForget;
         public int MaxRetryAttempts { get; set; } = 3;
         public int RetryDelayMilliseconds { get; set; } = 200;
 

@@ -19,6 +19,8 @@ public class ClusterMessageRouter : IMessageRouter
     private readonly ConcurrentDictionary<string, IMessageHandler> _handlerMap = new();
     private readonly IMetricContributor _metrics;
     private readonly ILogger<ClusterMessageRouter> _logger;
+    private readonly DedicatedPriorityDispatcher _fastPath = new(2); // 2 threads for critical messages
+
 
     public ClusterMessageRouter(IEnumerable<IMessageHandler> handlers, IMetricContributor metrics, ILogger<ClusterMessageRouter> logger)
     {
@@ -67,7 +69,21 @@ public class ClusterMessageRouter : IMessageRouter
         {
             try
             {
-                await handler.HandleAsync(message);
+                switch (message.MessageType)
+                {
+                    case MessageTypes.MetricsRequest:
+                    case MessageTypes.MetricsResponse:
+                    case MessageTypes.Heartbeat:
+                    case MessageTypes.NodeJoined:
+                    case MessageTypes.NodeLeft:
+                    case MessageTypes.LeaderChanged:
+                        _fastPath.Submit(() => handler.HandleAsync(message));
+                        break;
+
+                    default:
+                        await handler.HandleAsync(message);
+                        break;
+                }
             }
             catch (Exception ex)
             {

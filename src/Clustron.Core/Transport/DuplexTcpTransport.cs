@@ -328,7 +328,8 @@ public class DuplexTcpTransport : BaseTcpTransport
         return false;
     }
 
-    public override Task SendImmediateAsync(NodeInfo target, Message message) => SendAsync(target, message);
+    public override Task SendImmediateAsync(NodeInfo target,  Message message) => SendAsync(target, message);
+    public override Task SendImmediateAsync(NodeInfo target,  byte[] data) => SendAsync(target, data);
 
     public override void RemoveConnection(string nodeId)
     {

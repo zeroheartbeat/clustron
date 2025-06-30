@@ -46,12 +46,14 @@ public class TransportFactory : ITransportFactory
 
     public ITransport Create()
     {
-        ITransport transport = _config.UseDuplexConnections
+        BaseTcpTransport transport = _config.UseDuplexConnections
             ? new PipelinedTcpTransport(_config.Port, _clusterRuntime, _serializer, _metricContributor, _loggerProvider, _config.RetryOptions)
             : new UnidirectionalTcpTransport(_config.Port, _clusterRuntime, _serializer, _loggerProvider);
 
-        _communication.OverrideTransport(transport); // important for ClusterContext transport access
-        return transport;
+        var prioritizedTransport = new PrioritizedTransport(transport, _clusterRuntime.PeerManager);
+
+        _communication.OverrideTransport(prioritizedTransport); // important for ClusterContext transport access
+        return prioritizedTransport;
     }
 }
 

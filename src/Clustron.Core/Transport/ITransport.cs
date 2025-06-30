@@ -15,14 +15,14 @@ namespace Clustron.Core.Transport
     public interface ITransport
     {
         Task SendAsync(NodeInfo target, Message message);
+
+        Task SendImmediateAsync(NodeInfo target, Message message);
         Task StartAsync(IMessageRouter router);          
         Task<Message> WaitForResponseAsync(string expectedSenderId, string correlationId, TimeSpan timeout);
-        Task BroadcastAsync(Message message, params string[] roles);
+        Task BroadcastAsync(Message message, bool sendImmediate, params string[] roles);
         void RemoveConnection(string nodeId);
         Task<bool> CanReachNodeAsync(NodeInfo node);
         Task HandlePeerDownAsync(string nodeId);
-
-        Task SendImmediateAsync(NodeInfo target, Message message);
     }
 }
 

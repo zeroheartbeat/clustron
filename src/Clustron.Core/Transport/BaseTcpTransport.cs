@@ -48,7 +48,7 @@ public abstract class BaseTcpTransport : ITransport
     public abstract void RemoveConnection(string nodeId);
     public abstract Task<bool> CanReachNodeAsync(NodeInfo node);
 
-    public virtual async Task BroadcastAsync(Message message, params string[] roles)
+    public virtual async Task BroadcastAsync(Message message, bool sendImmediate, params string[] roles)
     {
         var peers = _peerManager.GetPeersWithRole(roles);
         var body = _serializer.Serialize(message);
@@ -60,7 +60,7 @@ public abstract class BaseTcpTransport : ITransport
             if (peer.NodeId == message.SenderId)
                 continue;
 
-            tasks.Add(SendSafeAsync(peer, body));
+            tasks.Add(SendSafeAsync(peer, body, sendImmediate));
         }
 
         await Task.WhenAll(tasks);
@@ -129,10 +129,16 @@ public abstract class BaseTcpTransport : ITransport
         }
     }
 
-    private async Task SendSafeAsync(NodeInfo peer, byte[] data)
+    private async Task SendSafeAsync(NodeInfo peer, byte[] data, bool sendImmediate)
     {
         try
         {
+            if (sendImmediate)
+            {
+                await SendImmediateAsync(peer, data);
+                return;
+            }      
+
             await SendAsync(peer, data);
         }
         catch (Exception ex)
@@ -157,5 +163,6 @@ public abstract class BaseTcpTransport : ITransport
     }
 
     public abstract Task SendImmediateAsync(NodeInfo target, Message message);
+    public abstract Task SendImmediateAsync(NodeInfo target, byte[] data );
 }
 

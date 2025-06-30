@@ -18,9 +18,9 @@ namespace Clustron.Core.Events
 {
     public interface IClusterEventBus
     {
-        void Publish(IClusterEvent evt);
+        void Publish(IClusterEvent evt, bool sendImmediate = false);
 
-        Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null);
+        Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null, bool sendImmediate = false);
         void Subscribe<T>(Action<T> handler) where T : IClusterEvent;
         void Subscribe<T>(Func<T, Task> asyncHandler) where T : IClusterEvent;
 

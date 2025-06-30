@@ -28,7 +28,7 @@ public class MetricsSnapshotReceiverHandler : IMessageHandler
     private readonly IMessageSerializer _serializer;
     private readonly IClusterRuntime _runtime;
 
-    public string Type => MessageTypes.ClustronMetrics;
+    public string Type => MessageTypes.MetricsResponse;
 
     public MetricsSnapshotReceiverHandler(
         IClusterRuntime runtime,

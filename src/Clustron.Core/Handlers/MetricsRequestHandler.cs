@@ -31,7 +31,7 @@ namespace Clustron.Core.Handlers
         private readonly IClusterRuntime _runtime;
         private readonly IClusterCommunication _communication;
 
-        public string Type => MessageTypes.RequestMetrics;
+        public string Type => MessageTypes.MetricsRequest;
 
         public MetricsRequestHandler(
             ILogger<MetricsRequestHandler> logger,
@@ -66,13 +66,13 @@ namespace Clustron.Core.Handlers
             _logger.LogCritical("Captured snapshot in {Elapsed}ms", sw.ElapsedMilliseconds);
             snapshot.TimestampUtc = DateTime.UtcNow;
 
-            var reply = MessageBuilder.Create<ClusterMetricsSnapshot>(_runtime.Self.NodeId, MessageTypes.ClustronMetrics, message.CorrelationId, snapshot);
+            var reply = MessageBuilder.Create<ClusterMetricsSnapshot>(_runtime.Self.NodeId, MessageTypes.MetricsResponse, message.CorrelationId, snapshot);
 
             var requester = _runtime.PeerManager.GetPeerById(message.SenderId);
             if (requester != null)
             {
-                await _communication.Transport.SendAsync(requester, reply);
-                _logger.LogDebug("Sent metrics to {NodeId} for last {Duration}s", requester.NodeId, request.DurationSeconds);
+                await _communication.Transport.SendImmediateAsync(requester, reply);
+                _logger.LogCritical("Sent metrics to {NodeId} for last {Duration}s", requester.NodeId, request.DurationSeconds);
             }
         }
 

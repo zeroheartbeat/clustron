@@ -17,6 +17,7 @@ using Clustron.Core.Serialization;
 using Microsoft.Extensions.Logging;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
@@ -73,9 +74,12 @@ public class PipelinedTcpTransport : BaseTcpTransport
 
         try
         {
+            int readCount = 0;
+
             while (true)
             {
                 var result = await reader.ReadAsync();
+
                 var buffer = result.Buffer;
 
                 while (TryReadMessage(ref buffer, out var message))
@@ -335,6 +339,11 @@ public class PipelinedTcpTransport : BaseTcpTransport
     public async override Task SendImmediateAsync(NodeInfo target, Message message)
     {
         var data = _serializer.Serialize(message);
+        await SendImmediateAsync(target, data);
+    }
+
+    public async override Task SendImmediateAsync(NodeInfo target, byte[] data)
+    {
         var lockObj = _sendLocks.GetOrAdd(target.NodeId, _ => new SemaphoreSlim(1, 1));
         await lockObj.WaitAsync();
 

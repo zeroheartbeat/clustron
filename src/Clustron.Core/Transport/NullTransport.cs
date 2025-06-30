@@ -57,5 +57,15 @@ public class NullTransport : ITransport
     {
         throw new NotImplementedException();
     }
+
+    public Task BroadcastAsync(Message message, bool sendImmediate, params string[] roles)
+    {
+        throw new NotImplementedException();
+    }
+
+    public Task SendImmediateAsync(NodeInfo target, byte[] data)
+    {
+        throw new NotImplementedException();
+    }
 }
 

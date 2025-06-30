@@ -59,7 +59,6 @@ namespace Clustron.Core.Election
             {
                 try
                 {
-                    using var cts = new CancellationTokenSource(_electionTimeout);
                     var response = _clusterRuntime.PeerManager.IsAlive(node.NodeId);
 
                     _logger.LogDebug($"[Election] Response from {node.NodeId}: {(response ? "OK" : "No response")}");

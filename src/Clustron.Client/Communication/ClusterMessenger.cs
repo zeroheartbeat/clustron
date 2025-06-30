@@ -40,7 +40,7 @@ namespace Clustron.Client.Communication
                 Guid.NewGuid().ToString(),
                 data);
 
-            await _core.BroadcastAsync(message, ClustronRoles.Member);
+            await _core.BroadcastAsync(message, false, ClustronRoles.Member);
         }
 
         public async Task SendAsync<T>(string nodeId, T data)

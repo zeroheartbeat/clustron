@@ -91,7 +91,7 @@ public class MetricsCollectorBehavior : IRoleAwareBehavior, IMetricsListener
         var correlationId = Guid.NewGuid().ToString();
         var request = MessageBuilder.Create<MetricsRequest>(
             _self.NodeId,
-            MessageTypes.RequestMetrics,
+            MessageTypes.MetricsRequest,
             correlationId,
             new MetricsRequest { DurationSeconds = (int)PollInterval.TotalSeconds });
 

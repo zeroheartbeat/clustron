@@ -43,7 +43,7 @@ var client = Clustron.Client.Clustron.Initialize("clustron-alpha", args);
 
 //await SendAndReceiveItems(client);
 if (client.Management.Self.Roles.Contains(ClustronRoles.Member))
-    await SendAndReceiveItems(client);
+    await PubSubMessages(client);
 
 else
     await Task.Delay(Timeout.Infinite);
@@ -53,7 +53,7 @@ else
         // ✅ Register a message handler
         client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
         {
-            if (customer.Id % 10000 == 0)
+            if (customer.Id % 100000 == 0)
                 Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
             return Task.CompletedTask;
         });
@@ -115,7 +115,7 @@ static async Task PubSubMessages(IClustronClient client)
             receivedTotal++;
         }
 
-        if (evt.Payload.Id % 50000 == 0)
+        if (evt.Payload.Id % 500000 == 0)
             Console.WriteLine($"[RECV] {evt.Payload.Name} from {evt.Publisher}");
 
         await Task.CompletedTask;
@@ -142,7 +142,7 @@ static async Task PubSubMessages(IClustronClient client)
 
         await client.Messaging.PublishAsync(evt);
 
-        if (i % 50000 == 0)
+        if (i % 500000 == 0)
             Console.WriteLine($"[{selfId}] Sent {i} messages");
 
         //await Task.Delay(1); // small delay to avoid flooding

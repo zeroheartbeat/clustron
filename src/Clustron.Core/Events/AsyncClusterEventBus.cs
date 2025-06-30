@@ -75,13 +75,13 @@ public class AsyncClusterEventBus : IClusterEventBus
         });
     }
 
-    public async Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null)
+    public async Task PublishAsync(IClusterEvent evt, EventDispatchOptions? options = null, bool sendImmediate = false)
     {
         options ??= new EventDispatchOptions();
         var type = evt.GetType();
 
         if (options.Scope == DeliveryScope.ClusterWide)
-            await BroadcastEventAsync(evt, type);
+            await BroadcastEventAsync(evt, type, sendImmediate);
 
         if (!_handlers.TryGetValue(type, out var handlerList))
             return;
@@ -118,8 +118,8 @@ public class AsyncClusterEventBus : IClusterEventBus
         }
     }
 
-    public void Publish(IClusterEvent evt)
-        => PublishAsync(evt).GetAwaiter().GetResult();
+    public void Publish(IClusterEvent evt, bool sendImmediate = false)
+        => PublishAsync(evt, sendImmediate:sendImmediate).GetAwaiter().GetResult();
 
     public async Task PublishFromNetworkAsync(byte[] payload, string eventType)
     {
@@ -130,7 +130,7 @@ public class AsyncClusterEventBus : IClusterEventBus
         }
     }
 
-    private async Task BroadcastEventAsync(IClusterEvent evt, Type type)
+    private async Task BroadcastEventAsync(IClusterEvent evt, Type type, bool sendImmediate = false)
     {
         var message = MessageBuilder.Create(
             _self.NodeId,
@@ -142,6 +142,6 @@ public class AsyncClusterEventBus : IClusterEventBus
             ? new[] { ClustronRoles.Member }
             : Array.Empty<string>();
 
-        await _communication.Transport.BroadcastAsync(message, targetRoles);
+        await _communication.Transport.BroadcastAsync(message, sendImmediate, targetRoles);
     }
 }

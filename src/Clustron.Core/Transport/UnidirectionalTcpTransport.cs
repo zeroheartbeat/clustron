@@ -20,7 +20,8 @@ using System.Net.Sockets;
 
 namespace Clustron.Core.Transport;
 
-public class UnidirectionalTcpTransport : BaseTcpTransport
+public class 
+    UnidirectionalTcpTransport : BaseTcpTransport
 {
     private readonly int _port;
     private readonly ClusterPeerManager _peerManager;
@@ -255,6 +256,11 @@ public class UnidirectionalTcpTransport : BaseTcpTransport
     }
 
     public override Task SendImmediateAsync(NodeInfo target, Message message)
+    {
+        throw new NotImplementedException();
+    }
+
+    public override Task SendImmediateAsync(NodeInfo target, byte[] data)
     {
         throw new NotImplementedException();
     }

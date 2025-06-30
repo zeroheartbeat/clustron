@@ -60,13 +60,13 @@ public class ClustronClientCore
         _metrics.Increment(MetricKeys.Msg.Direct.Sent);
     }
 
-    public async Task BroadcastAsync(Message message, params string[] roles)
+    public async Task BroadcastAsync(Message message, bool sendImmediate, params string[] roles)
     {
         var recipients = _peerManager.GetActivePeers()
             .Where(p => roles.Length == 0 || p.Roles?.Intersect(roles, StringComparer.OrdinalIgnoreCase).Any() == true)
             .ToList();
 
-        await _controller.Communication.Transport.BroadcastAsync(message, roles);
+        await _controller.Communication.Transport.BroadcastAsync(message, sendImmediate, roles);
 
         _metrics.Increment(MetricKeys.Msg.Direct.Broadcasted);
     }

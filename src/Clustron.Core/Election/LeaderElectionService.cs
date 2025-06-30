@@ -81,11 +81,6 @@ namespace Clustron.Core.Election
                 {
                     int newEpoch = CurrentEpoch + 1;
                     _state.SetLeader(leader, newEpoch);
-
-                    var payload = new LeaderChangedEvent(leader, newEpoch);
-                    var correlationId = Guid.NewGuid().ToString();
-                    var message = MessageBuilder.Create<LeaderChangedEvent>(_self.NodeId, MessageTypes.LeaderChanged, correlationId, payload);
-                    await _communicationProvider.Transport.BroadcastAsync(message);
                 }
             }
             finally

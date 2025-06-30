@@ -150,7 +150,7 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
                         {
                             var hbsuspect = new HeartbeatSuspect(peer);
                             var msg = MessageBuilder.Create<HeartbeatSuspect>(_self.NodeId, MessageTypes.HeartbeatSuspect, hbsuspect);
-                            _ = _transport.SendAsync(_clusterLeader.Value.CurrentLeader, msg);
+                            _ = _transport.SendImmediateAsync(_clusterLeader.Value.CurrentLeader, msg);
                         }
                     }
 
@@ -187,7 +187,7 @@ public class TcpHeartbeatMonitor : IHeartbeatMonitor
             var correlationId = Guid.NewGuid().ToString();
             var message = MessageBuilder.Create(_self.NodeId, MessageTypes.Heartbeat, correlationId, heartbeatPayload);
 
-            await _transport!.SendAsync(node, message);
+            await _transport!.SendImmediateAsync(node, message);
             _metrics.Increment(MetricKeys.Heartbeat.Sent);
 
             return true;

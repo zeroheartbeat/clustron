@@ -43,7 +43,7 @@ namespace Clustron.Core.Cluster
             if (isNew)
             {
                 _logger.LogInformation("Node joined: {NodeId}", peer.NodeId);
-                _eventBus.Publish(new NodeJoinedEvent(peer));
+                _eventBus.Publish(new NodeJoinedEvent(peer), true);
             }
 
             return isNew;
@@ -72,7 +72,7 @@ namespace Clustron.Core.Cluster
             if (wasAlive)
             {
                 _logger.LogWarning("Node left: {NodeId}", peer.NodeId);
-                _eventBus.Publish(new NodeLeftEvent(peer));
+                _eventBus.Publish(new NodeLeftEvent(peer), true);
             }
 
             return true;
@@ -115,7 +115,7 @@ namespace Clustron.Core.Cluster
             _currentLeader = leader;
             _currentEpoch = epoch;
 
-            _eventBus.Publish(new LeaderChangedEvent(leader, epoch));
+            _eventBus.Publish(new LeaderChangedEvent(leader, epoch), true);
             return true;
         }
 

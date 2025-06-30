@@ -17,7 +17,7 @@ namespace Clustron.Core.Configuration
     public class MetricsOptions
     {
         public int RollingWindowSeconds { get; set; } = 60;
-        public int MetricsTimeoutMilliseconds { get; set; } = 5000;
+        public int MetricsTimeoutMilliseconds { get; set; } = 60000; // 60 seconds timeout
     }
 }
 
