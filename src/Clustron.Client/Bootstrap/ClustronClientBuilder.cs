@@ -128,7 +128,7 @@ public class ClustronClientBuilder
         var client = new ClustronClient(clientCore);
 
         var handler = new ClientMessageHandler(
-            client,
+            clientCore,
             resolved.GetRequiredService<ILogger<ClientMessageHandler>>());
 
         var router = resolved.GetRequiredService<IMessageRouter>();

@@ -9,6 +9,7 @@
 using Clustron.Abstractions;
 using Clustron.Client;
 using Clustron.Client.Models;
+using Clustron.Core.Client;
 using Clustron.Core.Messaging;
 using Clustron.Core.Serialization;
 using Microsoft.Extensions.Logging;
@@ -17,13 +18,13 @@ namespace Clustron.Client.Handlers;
 
 public class ClientMessageHandler : IMessageHandler
 {
-    public string Type => ClientMessageTypes.ClientMessage;
+    public string Type => MessageTypes.ClientMessage;
 
-    private readonly IClustronClient _client;
+    private readonly ClustronClientCore _client;
     private readonly ILogger<ClientMessageHandler> _logger;
 
     public ClientMessageHandler(
-        IClustronClient client,
+        ClustronClientCore client,
         ILogger<ClientMessageHandler> logger)
     {
         _client = client;
@@ -32,7 +33,7 @@ public class ClientMessageHandler : IMessageHandler
 
     public async Task HandleAsync(Message message)
     {
-        if (!_client.Messaging.TryGetHandler(message.MessageType, out var dispatcher))
+        if (!_client.TryGetHandler(message.MessageType, out var dispatcher))
         {
             _logger.LogWarning("No handler registered for message type: {Type}", message.MessageType);
             return;

@@ -22,7 +22,6 @@ namespace Clustron.Client.Communication
     public class ClusterMessenger : IMessenger
     {
         private readonly ClustronClientCore _core;
-        private readonly Dictionary<string, Func<byte[], string, Task>> _typedDispatchers = new();
 
 
         public ClusterMessenger(ClustronClientCore core)
@@ -37,7 +36,7 @@ namespace Clustron.Client.Communication
 
             var message = MessageBuilder.Create(
                 _core.Self.NodeId,
-                ClientMessageTypes.ClientMessage,
+                MessageTypes.ClientMessage,
                 Guid.NewGuid().ToString(),
                 data);
 
@@ -51,7 +50,7 @@ namespace Clustron.Client.Communication
 
             var message = MessageBuilder.Create(
                 _core.Self.NodeId,
-                ClientMessageTypes.ClientMessage,
+                MessageTypes.ClientMessage,
                 Guid.NewGuid().ToString(),
                 data); // Send data directly
 
@@ -80,18 +79,9 @@ namespace Clustron.Client.Communication
 
         public void OnMessageReceived<T>(Func<T, string, Task> handler)
         {
-            var messageType = ClientMessageTypes.ClientMessage;
-
-            _typedDispatchers[messageType] = async (payloadBytes, senderId) =>
-            {
-                var obj = _core.Serializer.Deserialize<T>(payloadBytes);
-                await handler(obj, senderId);
-            };
+            _core.RegisterClientMessageHandler<T>(handler);
         }
 
-        public bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher)
-        {
-            return _typedDispatchers.TryGetValue(messageType, out dispatcher);
-        }
+        
     }
 }

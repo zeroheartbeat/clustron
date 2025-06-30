@@ -20,7 +20,6 @@ namespace Clustron.Client.Communication
         Task SendAsync<T>(string nodeId, T payload);
         Task BroadcastAsync<T>(T payload);
         void OnMessageReceived<T>(Func<T, string, Task> handler);
-        bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher);
 
         public Task PublishAsync<T>(T @event, EventDispatchOptions? options = null)
                                             where T : IClusterEvent;

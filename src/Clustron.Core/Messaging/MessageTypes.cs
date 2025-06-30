@@ -21,6 +21,7 @@ namespace Clustron.Core.Messaging
         public const string RequestMetrics = "clustron.metrics.request";
         public const string ClusterView = "clustron.cluster.view";
         public const string CustomEvent = "clustron.custom.event";
+        public const string ClientMessage = "clustron.message.client";
     }
 }
 

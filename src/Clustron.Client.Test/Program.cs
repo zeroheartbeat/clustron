@@ -43,7 +43,7 @@ var client = Clustron.Client.Clustron.Initialize("clustron-alpha", args);
 
 //await SendAndReceiveItems(client);
 if (client.Management.Self.Roles.Contains(ClustronRoles.Member))
-    await PubSubMessages(client);
+    await SendAndReceiveItems(client);
 
 else
     await Task.Delay(Timeout.Infinite);
@@ -53,17 +53,17 @@ else
         // ✅ Register a message handler
         client.Messaging.OnMessageReceived<Customer>((customer, sender) =>
         {
-            if (customer.Id % 5000 == 0)
+            if (customer.Id % 10000 == 0)
                 Console.WriteLine($"Received from {sender}: {customer.Name} (Id={customer.Id})");
             return Task.CompletedTask;
         });
 
-        Console.WriteLine("Client started. Press any key to start sending messages...");
-        Console.ReadLine();
+            await Task.Delay(TimeSpan.FromSeconds(5));
+    Console.WriteLine("Client started.");
 
         var random = new Random();
         long messageCount = 0;
-        while (true)
+        while (messageCount < 20000)
         {
             // Simulate a 100-byte payload
             var customer = new Customer
@@ -81,10 +81,9 @@ else
                 break;
             }
             messageCount++;
-            if (messageCount % 100 == 0)
+            if (messageCount % 10000 == 0)
                 Console.WriteLine($"Total broadcasted messages {messageCount}");
 
-            await Task.Delay(TimeSpan.FromSeconds(5));
         }
 
         Console.WriteLine("Press CTRL+C to stop");

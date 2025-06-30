@@ -29,7 +29,7 @@ public class ClustronClientCore
     private readonly IMetricContributor _metrics;
     private readonly ClusterNodeControllerBase _controller;
 
-    private readonly ConcurrentDictionary<string, Func<object, Task>> _handlers = new();
+    private readonly ConcurrentDictionary<string, Func<byte[], string, Task>> _typedHandlers = new();
 
     public event Action<NodeInfo>? NodeJoined;
     public event Action<NodeInfo>? NodeLeft;
@@ -87,6 +87,24 @@ public class ClustronClientCore
             // Track total delivered messages
             _metrics.Increment(MetricKeys.Msg.Events.Delivered);
         });
+    }
+
+    public void RegisterClientMessageHandler<T>(Func<T, string, Task> handler)
+    {
+        var messageType = MessageTypes.ClientMessage;
+
+        _typedHandlers[messageType] = async (payloadBytes, senderId) =>
+        {
+            var deserialized = _serializer.Deserialize<T>(payloadBytes);
+            await handler(deserialized, senderId);
+            _metrics.Increment(MetricKeys.Msg.Direct.Received);
+        };
+    }
+
+
+    public bool TryGetHandler(string messageType, out Func<byte[], string, Task> dispatcher)
+    {
+        return _typedHandlers.TryGetValue(messageType, out dispatcher);
     }
 
     public IEnumerable<NodeInfo> GetMembers() => _peerManager.GetPeersWithRole(ClustronRoles.Member);
